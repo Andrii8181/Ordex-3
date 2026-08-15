@@ -24,6 +24,14 @@ def get_connection():
     return conn
 
 
+def _ensure_column(conn, table, column, coltype):
+    """Додає колонку до вже існуючої таблиці, якщо її ще немає (безпечна міграція)."""
+    cur = conn.execute(f"PRAGMA table_info({table})")
+    existing = {row["name"] for row in cur.fetchall()}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
@@ -55,6 +63,10 @@ def init_db():
             address TEXT,
             carrier TEXT,
             carrier_branch TEXT,
+            delivery_type TEXT,        -- 'branch' (на відділення) або 'address' (адресна)
+            street TEXT,
+            building TEXT,
+            apartment TEXT,
             notes TEXT,
             created_at TEXT NOT NULL
         )
@@ -84,6 +96,10 @@ def init_db():
             recipient_phone TEXT,
             carrier TEXT,
             carrier_branch TEXT,
+            delivery_type TEXT,
+            street TEXT,
+            building TEXT,
+            apartment TEXT,
             recipient_oblast TEXT,
             recipient_city TEXT,
             recipient_address TEXT,
@@ -122,6 +138,13 @@ def init_db():
         )
     """)
 
+    conn.commit()
+
+    # безпечна міграція: додає нові колонки, якщо база створена старою версією програми
+    for col, coltype in [("delivery_type", "TEXT"), ("street", "TEXT"),
+                          ("building", "TEXT"), ("apartment", "TEXT")]:
+        _ensure_column(conn, "clients", col, coltype)
+        _ensure_column(conn, "orders", col, coltype)
     conn.commit()
     conn.close()
 
@@ -204,7 +227,8 @@ def search_products(prefix, as_of_date=None, limit=15):
 # ---------------------------------------------------------------------------
 
 def upsert_client(full_name, phone=None, oblast=None, city=None, address=None,
-                   carrier=None, carrier_branch=None, notes=None):
+                   carrier=None, carrier_branch=None, delivery_type=None,
+                   street=None, building=None, apartment=None, notes=None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT id FROM clients WHERE full_name = ?", (full_name,))
@@ -215,7 +239,10 @@ def upsert_client(full_name, phone=None, oblast=None, city=None, address=None,
         fields, values = [], []
         for col, val in [("phone", phone), ("oblast", oblast), ("city", city),
                           ("address", address), ("carrier", carrier),
-                          ("carrier_branch", carrier_branch), ("notes", notes)]:
+                          ("carrier_branch", carrier_branch),
+                          ("delivery_type", delivery_type), ("street", street),
+                          ("building", building), ("apartment", apartment),
+                          ("notes", notes)]:
             if val:
                 fields.append(f"{col} = ?")
                 values.append(val)
@@ -225,10 +252,12 @@ def upsert_client(full_name, phone=None, oblast=None, city=None, address=None,
     else:
         cur.execute("""
             INSERT INTO clients (full_name, phone, oblast, city, address,
-                                  carrier, carrier_branch, notes, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  carrier, carrier_branch, delivery_type,
+                                  street, building, apartment, notes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (full_name, phone, oblast, city, address, carrier, carrier_branch,
-              notes, datetime.now().isoformat(timespec="seconds")))
+              delivery_type, street, building, apartment, notes,
+              datetime.now().isoformat(timespec="seconds")))
         cid = cur.lastrowid
     conn.commit()
     conn.close()
@@ -322,19 +351,22 @@ def save_order(header, items, file_name):
     cur.execute("""
         INSERT INTO orders (order_number, order_date, buyer_name, buyer_address,
                              responsible, payment_method, sender_phone, recipient_phone,
-                             carrier, carrier_branch, recipient_oblast, recipient_city,
+                             carrier, carrier_branch, delivery_type, street, building,
+                             apartment, recipient_oblast, recipient_city,
                              recipient_address, recipient_name, total_sum, total_weight,
                              client_id, file_name, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         header["order_number"], header["order_date"], header["buyer_name"],
         header.get("buyer_address"), header.get("responsible"),
         header.get("payment_method"), header.get("sender_phone"),
         header.get("recipient_phone"), header.get("carrier"),
-        header.get("carrier_branch"), header.get("recipient_oblast"),
-        header.get("recipient_city"), header.get("recipient_address"),
-        header.get("recipient_name"), header.get("total_sum"),
-        header.get("total_weight"), header.get("client_id"), file_name,
+        header.get("carrier_branch"), header.get("delivery_type"),
+        header.get("street"), header.get("building"), header.get("apartment"),
+        header.get("recipient_oblast"), header.get("recipient_city"),
+        header.get("recipient_address"), header.get("recipient_name"),
+        header.get("total_sum"), header.get("total_weight"),
+        header.get("client_id"), file_name,
         datetime.now().isoformat(timespec="seconds"),
     ))
     order_id = cur.lastrowid
@@ -364,6 +396,137 @@ def get_order_items(order_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM order_items WHERE order_id = ? ORDER BY seq_no", (order_id,))
+    result = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Звітність та аналітика
+# ---------------------------------------------------------------------------
+
+def get_orders_in_range(date_from, date_to):
+    """date_from/date_to: 'YYYY-MM-DD' (включно)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM orders
+        WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+        ORDER BY order_date
+    """, (date_from, date_to))
+    result = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return result
+
+
+def report_summary(date_from, date_to):
+    """Загальні підсумки за період: кількість заявок, сума, вага, середній чек."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COUNT(*) AS orders_count,
+               COALESCE(SUM(total_sum), 0) AS total_sum,
+               COALESCE(SUM(total_weight), 0) AS total_weight
+        FROM orders
+        WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+    """, (date_from, date_to))
+    row = dict(cur.fetchone())
+    conn.close()
+    row["avg_check"] = (row["total_sum"] / row["orders_count"]) if row["orders_count"] else 0
+    return row
+
+
+def report_by_product(date_from, date_to):
+    """Продажі по товарах: сумарна кількість, сума, вага."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT oi.name AS product_name,
+               oi.code AS code,
+               SUM(oi.qty) AS total_qty,
+               SUM(oi.sum) AS total_sum,
+               SUM(oi.weight_total) AS total_weight,
+               COUNT(DISTINCT oi.order_id) AS orders_count
+        FROM order_items oi
+        JOIN orders o ON o.id = oi.order_id
+        WHERE substr(o.order_date, 1, 10) BETWEEN ? AND ?
+        GROUP BY oi.name, oi.code
+        ORDER BY total_sum DESC
+    """, (date_from, date_to))
+    result = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return result
+
+
+def report_by_client(date_from, date_to):
+    """Продажі по клієнтах."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT buyer_name,
+               COUNT(*) AS orders_count,
+               SUM(total_sum) AS total_sum,
+               SUM(total_weight) AS total_weight
+        FROM orders
+        WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+        GROUP BY buyer_name
+        ORDER BY total_sum DESC
+    """, (date_from, date_to))
+    result = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return result
+
+
+def report_by_geo(date_from, date_to):
+    """Продажі по областях/містах одержувачів."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COALESCE(NULLIF(recipient_oblast, ''), 'Не вказано') AS oblast,
+               COALESCE(NULLIF(recipient_city, ''), 'Не вказано') AS city,
+               COUNT(*) AS orders_count,
+               SUM(total_sum) AS total_sum
+        FROM orders
+        WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+        GROUP BY oblast, city
+        ORDER BY total_sum DESC
+    """, (date_from, date_to))
+    result = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return result
+
+
+def report_by_carrier(date_from, date_to):
+    """Продажі по перевізниках."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT COALESCE(NULLIF(carrier, ''), 'Не вказано') AS carrier,
+               COUNT(*) AS orders_count,
+               SUM(total_sum) AS total_sum
+        FROM orders
+        WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+        GROUP BY carrier
+        ORDER BY total_sum DESC
+    """, (date_from, date_to))
+    result = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return result
+
+
+def report_timeseries(date_from, date_to):
+    """Динаміка продажів по днях (для графіка)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT substr(order_date, 1, 10) AS day,
+               COUNT(*) AS orders_count,
+               SUM(total_sum) AS total_sum
+        FROM orders
+        WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+        GROUP BY day
+        ORDER BY day
+    """, (date_from, date_to))
     result = [dict(row) for row in cur.fetchall()]
     conn.close()
     return result
