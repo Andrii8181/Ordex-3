@@ -1,1 +1,43 @@
+name: Build Windows EXE
 
+on:
+  workflow_dispatch:       # дозволяє запустити вручну кнопкою на GitHub
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: write          # потрібно, щоб робочий процес міг створити Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Отримати код
+        uses: actions/checkout@v4
+
+      - name: Встановити Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Встановити залежності
+        run: |
+          pip install openpyxl pyinstaller
+
+      - name: Зібрати .exe
+        run: |
+          pyinstaller --onefile --windowed --name "ЧСМ-Заявки" main.py
+
+      - name: Завантажити готовий .exe (тимчасово, для швидкої перевірки)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ЧСМ-Заявки-exe
+          path: dist/ЧСМ-Заявки.exe
+
+      - name: Опублікувати Release з .exe (постійне посилання)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Збірка №${{ github.run_number }}
+          files: dist/ЧСМ-Заявки.exe
