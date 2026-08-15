@@ -4,6 +4,7 @@ main.py — головне вікно програми ведення заяво
 Запуск: python3 main.py
 """
 import os
+import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from datetime import datetime, date, timedelta
@@ -15,8 +16,23 @@ import reports
 import ukraine_regions
 from autocomplete import AutocompleteEntry
 
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+try:
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+
+
+def resource_path(*parts):
+    """
+    Повертає абсолютний шлях до файлу ресурсу (наприклад, іконки),
+    коректно як при звичайному запуску python main.py, так і всередині
+    зібраного PyInstaller-ом .exe (--onefile розпаковує дані у тимчасову
+    папку, шлях до якої лежить у sys._MEIPASS).
+    """
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, *parts)
 
 CARRIERS = ["Нова Пошта", "САТ", "Делівері", "Самовивіз"]
 DELIVERY_TYPES = [("branch", "На відділення"), ("address", "Адресна доставка")]
@@ -44,8 +60,9 @@ SIDEBAR_ITEMS = [
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("ЧСМ — Заявки")
+        self.title("Ordex — платформа для замовлень та звітів")
         self.geometry("1180x760")
+        self._set_app_icon()
 
         # -- глобальний шрифт --
         self.option_add("*Font", FONT)
@@ -76,9 +93,9 @@ class App(tk.Tk):
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
-        tk.Label(sidebar, text="ЧСМ", bg="#263238", fg="white",
+        tk.Label(sidebar, text="Ordex", bg="#263238", fg="white",
                  font=("Segoe UI", 16, "bold")).pack(pady=(18, 6))
-        tk.Label(sidebar, text="Заявки", bg="#263238", fg="#B0BEC5",
+        tk.Label(sidebar, text="Заявки та звіти", bg="#263238", fg="#B0BEC5",
                  font=FONT_SMALL).pack(pady=(0, 16))
 
         self.sidebar_buttons = {}
@@ -101,6 +118,23 @@ class App(tk.Tk):
             self._build_report_view(key)
 
         self._show_view("order")
+
+    def _set_app_icon(self):
+        """Встановлює значок вікна/панелі завдань: .ico для Windows, .png як резерв."""
+        ico_path = resource_path("assets", "ordex_icon.ico")
+        png_path = resource_path("assets", "ordex_icon_256.png")
+        try:
+            if os.path.exists(ico_path):
+                self.iconbitmap(ico_path)
+        except tk.TclError:
+            pass
+        try:
+            if os.path.exists(png_path):
+                icon_img = tk.PhotoImage(file=png_path)
+                self.iconphoto(True, icon_img)
+                self._icon_ref = icon_img  # тримаємо посилання, щоб картинку не прибрав збирач сміття
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------
     # Навігація
@@ -796,6 +830,17 @@ class App(tk.Tk):
         canvas.get_tk_widget().pack(fill="both", expand=True)
         view.canvas = canvas
 
+    def _show_chart_unavailable(self, view):
+        """Показується замість графіка, якщо matplotlib не встановлено/не вшито в збірку.
+        Таблиця звіту при цьому працює повністю — це стосується лише візуалізації."""
+        for child in view.chart_frame.winfo_children():
+            child.destroy()
+        tk.Label(view.chart_frame,
+                 text="Графік недоступний\n(модуль matplotlib відсутній у цій збірці).\n"
+                      "Таблиця звіту зліва працює як звичайно.",
+                 font=FONT_SMALL, fg="#78909C", wraplength=380, justify="center"
+                 ).pack(expand=True)
+
     def _render_summary(self, view, df, dt):
         s = db.report_summary(df, dt)
         headers = ["Показник", "Значення"]
@@ -808,18 +853,21 @@ class App(tk.Tk):
         self._set_table(view, headers, rows)
 
         ts = db.report_timeseries(df, dt)
-        fig = Figure(figsize=(4.2, 3.6), dpi=100)
-        ax = fig.add_subplot(111)
-        if ts:
-            days = [r["day"][5:] for r in ts]
-            sums = [r["total_sum"] for r in ts]
-            ax.bar(days, sums, color="#2e7d32")
-            ax.set_title("Сума продажів по днях", fontsize=10)
-            ax.tick_params(axis="x", labelrotation=90, labelsize=7)
+        if MATPLOTLIB_AVAILABLE:
+            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            ax = fig.add_subplot(111)
+            if ts:
+                days = [r["day"][5:] for r in ts]
+                sums = [r["total_sum"] for r in ts]
+                ax.bar(days, sums, color="#2e7d32")
+                ax.set_title("Сума продажів по днях", fontsize=10)
+                ax.tick_params(axis="x", labelrotation=90, labelsize=7)
+            else:
+                ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
+            fig.tight_layout()
+            self._set_chart(view, fig)
         else:
-            ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
-        fig.tight_layout()
-        self._set_chart(view, fig)
+            self._show_chart_unavailable(view)
         view.summary_label.configure(
             text=f"Період: {df} — {dt}.  Заявок: {s['orders_count']},  "
                  f"сума: {s['total_sum']:.2f} грн,  вага: {s['total_weight']:.2f} кг"
@@ -832,19 +880,22 @@ class App(tk.Tk):
                   round(d["total_weight"] or 0, 2), d["orders_count"]) for d in data]
         self._set_table(view, headers, rows)
 
-        fig = Figure(figsize=(4.2, 3.6), dpi=100)
-        ax = fig.add_subplot(111)
-        top = data[:10]
-        if top:
-            names = [d["product_name"][:14] for d in top][::-1]
-            sums = [d["total_sum"] for d in top][::-1]
-            ax.barh(names, sums, color="#1565c0")
-            ax.set_title("Топ-10 товарів за сумою", fontsize=10)
-            ax.tick_params(axis="y", labelsize=7)
+        if MATPLOTLIB_AVAILABLE:
+            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            ax = fig.add_subplot(111)
+            top = data[:10]
+            if top:
+                names = [d["product_name"][:14] for d in top][::-1]
+                sums = [d["total_sum"] for d in top][::-1]
+                ax.barh(names, sums, color="#1565c0")
+                ax.set_title("Топ-10 товарів за сумою", fontsize=10)
+                ax.tick_params(axis="y", labelsize=7)
+            else:
+                ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
+            fig.tight_layout()
+            self._set_chart(view, fig)
         else:
-            ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
-        fig.tight_layout()
-        self._set_chart(view, fig)
+            self._show_chart_unavailable(view)
         total = sum(d["total_sum"] for d in data)
         view.summary_label.configure(text=f"Період: {df} — {dt}.  Позицій: {len(data)},  сума: {total:.2f} грн")
 
@@ -855,19 +906,22 @@ class App(tk.Tk):
                   round(d["total_weight"] or 0, 2)) for d in data]
         self._set_table(view, headers, rows)
 
-        fig = Figure(figsize=(4.2, 3.6), dpi=100)
-        ax = fig.add_subplot(111)
-        top = data[:10]
-        if top:
-            names = [d["buyer_name"][:14] for d in top][::-1]
-            sums = [d["total_sum"] for d in top][::-1]
-            ax.barh(names, sums, color="#6a1b9a")
-            ax.set_title("Топ-10 клієнтів за сумою", fontsize=10)
-            ax.tick_params(axis="y", labelsize=7)
+        if MATPLOTLIB_AVAILABLE:
+            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            ax = fig.add_subplot(111)
+            top = data[:10]
+            if top:
+                names = [d["buyer_name"][:14] for d in top][::-1]
+                sums = [d["total_sum"] for d in top][::-1]
+                ax.barh(names, sums, color="#6a1b9a")
+                ax.set_title("Топ-10 клієнтів за сумою", fontsize=10)
+                ax.tick_params(axis="y", labelsize=7)
+            else:
+                ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
+            fig.tight_layout()
+            self._set_chart(view, fig)
         else:
-            ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
-        fig.tight_layout()
-        self._set_chart(view, fig)
+            self._show_chart_unavailable(view)
         total = sum(d["total_sum"] for d in data)
         view.summary_label.configure(text=f"Період: {df} — {dt}.  Клієнтів: {len(data)},  сума: {total:.2f} грн")
 
@@ -877,19 +931,22 @@ class App(tk.Tk):
         rows = [(d["oblast"], d["city"], d["orders_count"], round(d["total_sum"], 2)) for d in data]
         self._set_table(view, headers, rows)
 
-        fig = Figure(figsize=(4.2, 3.6), dpi=100)
-        ax = fig.add_subplot(111)
-        top = data[:10]
-        if top:
-            labels = [f"{d['oblast'][:10]}/{d['city'][:10]}" for d in top][::-1]
-            sums = [d["total_sum"] for d in top][::-1]
-            ax.barh(labels, sums, color="#ef6c00")
-            ax.set_title("Топ-10 напрямків доставки", fontsize=10)
-            ax.tick_params(axis="y", labelsize=7)
+        if MATPLOTLIB_AVAILABLE:
+            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            ax = fig.add_subplot(111)
+            top = data[:10]
+            if top:
+                labels = [f"{d['oblast'][:10]}/{d['city'][:10]}" for d in top][::-1]
+                sums = [d["total_sum"] for d in top][::-1]
+                ax.barh(labels, sums, color="#ef6c00")
+                ax.set_title("Топ-10 напрямків доставки", fontsize=10)
+                ax.tick_params(axis="y", labelsize=7)
+            else:
+                ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
+            fig.tight_layout()
+            self._set_chart(view, fig)
         else:
-            ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
-        fig.tight_layout()
-        self._set_chart(view, fig)
+            self._show_chart_unavailable(view)
         total = sum(d["total_sum"] for d in data)
         view.summary_label.configure(text=f"Період: {df} — {dt}.  Напрямків: {len(data)},  сума: {total:.2f} грн")
 
@@ -899,17 +956,20 @@ class App(tk.Tk):
         rows = [(d["carrier"], d["orders_count"], round(d["total_sum"], 2)) for d in data]
         self._set_table(view, headers, rows)
 
-        fig = Figure(figsize=(4.2, 3.6), dpi=100)
-        ax = fig.add_subplot(111)
-        if data:
-            labels = [d["carrier"] for d in data]
-            sums = [d["total_sum"] for d in data]
-            ax.pie(sums, labels=labels, autopct="%1.0f%%", textprops={"fontsize": 8})
-            ax.set_title("Розподіл продажів по перевізниках", fontsize=10)
+        if MATPLOTLIB_AVAILABLE:
+            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            ax = fig.add_subplot(111)
+            if data:
+                labels = [d["carrier"] for d in data]
+                sums = [d["total_sum"] for d in data]
+                ax.pie(sums, labels=labels, autopct="%1.0f%%", textprops={"fontsize": 8})
+                ax.set_title("Розподіл продажів по перевізниках", fontsize=10)
+            else:
+                ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
+            fig.tight_layout()
+            self._set_chart(view, fig)
         else:
-            ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
-        fig.tight_layout()
-        self._set_chart(view, fig)
+            self._show_chart_unavailable(view)
         total = sum(d["total_sum"] for d in data)
         view.summary_label.configure(text=f"Період: {df} — {dt}.  Сума: {total:.2f} грн")
 
@@ -919,18 +979,21 @@ class App(tk.Tk):
         rows = [(d["day"], d["orders_count"], round(d["total_sum"], 2)) for d in data]
         self._set_table(view, headers, rows)
 
-        fig = Figure(figsize=(4.2, 3.6), dpi=100)
-        ax = fig.add_subplot(111)
-        if data:
-            days = [d["day"][5:] for d in data]
-            sums = [d["total_sum"] for d in data]
-            ax.plot(days, sums, marker="o", color="#c62828")
-            ax.set_title("Динаміка суми продажів", fontsize=10)
-            ax.tick_params(axis="x", labelrotation=90, labelsize=7)
+        if MATPLOTLIB_AVAILABLE:
+            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            ax = fig.add_subplot(111)
+            if data:
+                days = [d["day"][5:] for d in data]
+                sums = [d["total_sum"] for d in data]
+                ax.plot(days, sums, marker="o", color="#c62828")
+                ax.set_title("Динаміка суми продажів", fontsize=10)
+                ax.tick_params(axis="x", labelrotation=90, labelsize=7)
+            else:
+                ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
+            fig.tight_layout()
+            self._set_chart(view, fig)
         else:
-            ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
-        fig.tight_layout()
-        self._set_chart(view, fig)
+            self._show_chart_unavailable(view)
         total_orders = sum(d["orders_count"] for d in data)
         total_sum = sum(d["total_sum"] for d in data)
         view.summary_label.configure(
