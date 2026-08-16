@@ -12,6 +12,7 @@ db.py — робота з базою даних SQLite для програми �
 """
 import sqlite3
 import os
+import json
 from datetime import datetime, date
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_app.db")
@@ -155,6 +156,23 @@ def init_db():
         )
     """)
 
+    # Об'єднаний профіль відправника: спосіб оплати + телефон/ім'я + перевізник,
+    # яким саме цей відправник відправляє, + його API-ключ і дані для ТТН.
+    # Один бізнес може мати кілька відправників, і кожен може працювати
+    # з іншим перевізником/акаунтом — тому це окремі рядки, не один спільний ключ.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS senders (
+            payment_method TEXT PRIMARY KEY,
+            phone TEXT,
+            sender_name TEXT,
+            carrier TEXT,
+            api_key TEXT,
+            extra TEXT,           -- JSON: sender_city, sender_warehouse,
+                                   -- sender_counterparty_ref, sender_contact_ref
+            updated_at TEXT
+        )
+    """)
+
     conn.commit()
 
     # безпечна міграція: додає нові колонки, якщо база створена старою версією програми
@@ -169,8 +187,44 @@ def init_db():
         _ensure_column(conn, "orders", col, coltype)
     _ensure_column(conn, "orders", "sender_name", "TEXT")
     _ensure_column(conn, "sender_phones", "sender_name", "TEXT")
+
+    _migrate_to_senders_table(conn)
     conn.commit()
     conn.close()
+
+
+def _migrate_to_senders_table(conn):
+    """
+    Одноразова міграція для тих, хто вже налаштував телефони відправника
+    та/або API-ключі перевізників окремо (до об'єднання в один профіль).
+    Не перезаписує senders, якщо там уже щось є.
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS c FROM senders")
+    if cur.fetchone()["c"] > 0:
+        return
+
+    cur.execute("SELECT * FROM sender_phones")
+    old_phones = cur.fetchall()
+    if not old_phones:
+        return
+
+    cur.execute("SELECT * FROM carrier_credentials")
+    old_creds = cur.fetchall()
+    # якщо налаштовано рівно одного перевізника — прив'язуємо його ключ
+    # до всіх наявних способів оплати (найкраще припущення без втрати даних)
+    single_cred = old_creds[0] if len(old_creds) == 1 else None
+
+    for row in old_phones:
+        carrier = single_cred["carrier"] if single_cred else None
+        api_key = single_cred["api_key"] if single_cred else None
+        extra = single_cred["extra"] if single_cred else None
+        cur.execute("""
+            INSERT OR IGNORE INTO senders
+                (payment_method, phone, sender_name, carrier, api_key, extra, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (row["payment_method"], row["phone"], row["sender_name"],
+              carrier, api_key, extra, datetime.now().isoformat(timespec="seconds")))
 
 
 # ---------------------------------------------------------------------------
@@ -379,43 +433,69 @@ def search_cities(oblast, prefix, limit=15):
 
 
 # ---------------------------------------------------------------------------
-# Відправник / способи оплати
+# Відправники (профіль: спосіб оплати + телефон/ім'я + перевізник + API-ключ)
 # ---------------------------------------------------------------------------
 
-def get_sender_phones():
+def _sender_row_to_dict(row):
+    extra = {}
+    if row["extra"]:
+        try:
+            extra = json.loads(row["extra"])
+        except (ValueError, TypeError):
+            extra = {}
+    return {
+        "payment_method": row["payment_method"],
+        "phone": row["phone"],
+        "sender_name": row["sender_name"],
+        "carrier": row["carrier"],
+        "api_key": row["api_key"],
+        "extra": extra,
+    }
+
+
+def get_senders():
+    """Повертає список усіх профілів відправників (список dict)."""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM sender_phones ORDER BY payment_method")
-    result = {row["payment_method"]: row["phone"] for row in cur.fetchall()}
+    cur.execute("SELECT * FROM senders ORDER BY payment_method")
+    result = [_sender_row_to_dict(row) for row in cur.fetchall()]
     conn.close()
     return result
 
 
-def get_sender_phone_details():
-    """Повертає {payment_method: {'phone': ..., 'sender_name': ...}}."""
+def get_sender(payment_method):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM sender_phones ORDER BY payment_method")
-    result = {row["payment_method"]: {"phone": row["phone"], "sender_name": row["sender_name"]}
-              for row in cur.fetchall()}
+    cur.execute("SELECT * FROM senders WHERE payment_method = ?", (payment_method,))
+    row = cur.fetchone()
     conn.close()
-    return result
+    return _sender_row_to_dict(row) if row else None
 
 
-def set_sender_phone(payment_method, phone, sender_name=None):
+def set_sender(payment_method, phone, sender_name=None, carrier=None,
+               api_key=None, extra=None):
     conn = get_connection()
     conn.execute("""
-        INSERT INTO sender_phones (payment_method, phone, sender_name) VALUES (?, ?, ?)
-        ON CONFLICT(payment_method) DO UPDATE SET phone = excluded.phone,
-                                                   sender_name = excluded.sender_name
-    """, (payment_method, phone, sender_name))
+        INSERT INTO senders (payment_method, phone, sender_name, carrier,
+                              api_key, extra, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(payment_method) DO UPDATE SET
+            phone = excluded.phone,
+            sender_name = excluded.sender_name,
+            carrier = excluded.carrier,
+            api_key = excluded.api_key,
+            extra = excluded.extra,
+            updated_at = excluded.updated_at
+    """, (payment_method, phone, sender_name, carrier, api_key,
+          json.dumps(extra or {}, ensure_ascii=False),
+          datetime.now().isoformat(timespec="seconds")))
     conn.commit()
     conn.close()
 
 
-def delete_sender_phone(payment_method):
+def delete_sender(payment_method):
     conn = get_connection()
-    conn.execute("DELETE FROM sender_phones WHERE payment_method = ?", (payment_method,))
+    conn.execute("DELETE FROM senders WHERE payment_method = ?", (payment_method,))
     conn.commit()
     conn.close()
 
