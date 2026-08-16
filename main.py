@@ -5,6 +5,8 @@ main.py — головне вікно програми ведення заяво
 """
 import os
 import sys
+import json
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from datetime import datetime, date, timedelta
@@ -14,6 +16,7 @@ import price_import
 import order_export
 import reports
 import ukraine_regions
+import carriers
 from autocomplete import AutocompleteEntry
 
 try:
@@ -34,6 +37,28 @@ def resource_path(*parts):
     base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_dir, *parts)
 
+
+def enable_windows_dpi_awareness():
+    """
+    Головна причина "розмитого" тексту у звичайних Tkinter-програмах на
+    Windows — це НЕ шрифт, а те, що Windows масштабує все вікно програми
+    як картинку (bitmap stretching), якщо програма не повідомила систему,
+    що вміє сама коректно малювати на екранах з масштабуванням >100%
+    (а майже всі сучасні ноутбуки/монітори мають масштабування 125–150%).
+    Цей виклик має відбутися ДО створення головного вікна.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+    except Exception:
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 CARRIERS = ["Нова Пошта", "САТ", "Делівері", "Самовивіз"]
 DELIVERY_TYPES = [("branch", "На відділення"), ("address", "Адресна доставка")]
 
@@ -43,25 +68,47 @@ OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "orders")
 FONT = ("Segoe UI", 11)
 FONT_BOLD = ("Segoe UI", 11, "bold")
 FONT_SMALL = ("Segoe UI", 10)
-FONT_TITLE = ("Segoe UI", 14, "bold")
+FONT_TITLE = ("Segoe UI", 15, "bold")
+FONT_TOPBAR = ("Segoe UI", 12)
+FONT_TOPBAR_BOLD = ("Segoe UI", 12, "bold")
+
+# -- Кольорова палітра (у стилі логотипу Ordex: глибокий синій + бірюзовий) --
+COLOR_SIDEBAR = "#16232F"        # темно-синій, майже графітовий
+COLOR_SIDEBAR_ACTIVE = "#1F3A4D"
+COLOR_TOPBAR = "#1C2E3D"
+COLOR_TOPBAR_HOVER = "#2A4457"
+COLOR_ACCENT = "#20B2A6"         # бірюзовий акцент з логотипу
+COLOR_ACCENT_DARK = "#189488"
+COLOR_BG = "#F2F5F7"             # світлий фон робочої області
+COLOR_CARD = "#FFFFFF"
+COLOR_BORDER = "#DCE3E8"
+COLOR_TEXT = "#1C2B36"
+COLOR_TEXT_MUTED = "#7C8A93"
 
 SIDEBAR_ITEMS = [
     ("order", "Нова заявка"),
     ("history", "Історія заявок"),
-    ("report_summary", "Звіт: Зведення"),
-    ("report_products", "Звіт: Товари"),
-    ("report_clients", "Звіт: Клієнти"),
-    ("report_geo", "Звіт: Географія"),
-    ("report_carriers", "Звіт: Перевізники"),
-    ("report_dynamics", "Звіт: Динаміка"),
 ]
+
+REPORT_MENU_ITEMS = [
+    ("report_summary", "Зведення"),
+    ("report_products", "Товари"),
+    ("report_clients", "Клієнти"),
+    ("report_geo", "Географія"),
+    ("report_carriers", "Перевізники"),
+    ("report_dynamics", "Динаміка"),
+]
+
+DEFAULT_TRACKING_INTERVAL_MINUTES = 30
+TOAST_WIDTH = 340
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Ordex — платформа для замовлень та звітів")
-        self.geometry("1180x760")
+        self.geometry("1320x800")
+        self.configure(bg=COLOR_BG)
         self._set_app_icon()
 
         # -- глобальний шрифт --
@@ -71,9 +118,14 @@ class App(tk.Tk):
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure(".", font=FONT)
-        style.configure("Treeview", font=FONT, rowheight=26)
-        style.configure("Treeview.Heading", font=FONT_BOLD)
+        style.configure(".", font=FONT, background=COLOR_BG)
+        style.configure("Treeview", font=FONT, rowheight=28,
+                         background=COLOR_CARD, fieldbackground=COLOR_CARD,
+                         borderwidth=0)
+        style.configure("Treeview.Heading", font=FONT_BOLD,
+                         background="#EDF1F3", foreground=COLOR_TEXT, relief="flat")
+        style.map("Treeview", background=[("selected", COLOR_ACCENT)],
+                  foreground=[("selected", "white")])
         style.configure("TCombobox", font=FONT)
         style.configure("TNotebook.Tab", font=FONT)
 
@@ -83,41 +135,86 @@ class App(tk.Tk):
         self.current_items = []
         self._selected_product = None
 
-        self._build_menu()
+        # -- глобальна світла тема: замість переписування кожного віджета
+        # окремо, задаємо кольори за замовчуванням через реєстр опцій Tk.
+        # Віджети, яким явно задано bg/fg у коді (сайдбар, топбар, кнопки-
+        # акценти), просто перекривають ці значення локально. --
+        self.option_add("*Background", COLOR_BG)
+        self.option_add("*Foreground", COLOR_TEXT)
+        self.option_add("*Entry.Background", "white")
+        self.option_add("*Entry.relief", "solid")
+        self.option_add("*Entry.borderWidth", 1)
+        self.option_add("*Entry.highlightThickness", 1)
+        self.option_add("*Entry.highlightColor", COLOR_ACCENT)
+        self.option_add("*Entry.highlightBackground", COLOR_BORDER)
+        self.option_add("*Button.Background", "#E7ECEF")
+        self.option_add("*Button.activeBackground", "#DCE3E8")
+        self.option_add("*Button.relief", "flat")
+        self.option_add("*Button.borderWidth", 0)
+        self.option_add("*Button.cursor", "hand2")
+        self.option_add("*Button.padX", 12)
+        self.option_add("*Button.padY", 6)
+        self.option_add("*Listbox.Background", "white")
+        self.option_add("*Listbox.relief", "solid")
+        self.option_add("*Listbox.borderWidth", 1)
+        self.option_add("*Labelframe.Background", COLOR_BG)
+        self.option_add("*Labelframe.foreground", COLOR_TEXT_MUTED)
+        self.option_add("*Radiobutton.Background", COLOR_BG)
+        self.option_add("*Radiobutton.activeBackground", COLOR_BG)
+
+        # -- верхня панель: Файл / Налаштування / Звіти --
+        self._build_topbar()
 
         # -- бокове меню + область контенту --
-        container = tk.Frame(self)
+        container = tk.Frame(self, bg=COLOR_BG)
         container.pack(fill="both", expand=True)
 
-        sidebar = tk.Frame(container, bg="#263238", width=210)
+        sidebar = tk.Frame(container, bg=COLOR_SIDEBAR, width=220)
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
-        tk.Label(sidebar, text="Ordex", bg="#263238", fg="white",
-                 font=("Segoe UI", 16, "bold")).pack(pady=(18, 6))
-        tk.Label(sidebar, text="Заявки та звіти", bg="#263238", fg="#B0BEC5",
-                 font=FONT_SMALL).pack(pady=(0, 16))
+        tk.Label(sidebar, text="Ordex", bg=COLOR_SIDEBAR, fg="white",
+                 font=("Segoe UI", 18, "bold")).pack(pady=(22, 2), padx=20, anchor="w")
+        tk.Label(sidebar, text="Заявки та звіти", bg=COLOR_SIDEBAR, fg="#8FA3B0",
+                 font=FONT_SMALL).pack(pady=(0, 22), padx=20, anchor="w")
 
         self.sidebar_buttons = {}
         for key, label in SIDEBAR_ITEMS:
-            btn = tk.Button(sidebar, text=label, anchor="w", relief="flat",
-                             bg="#263238", fg="white", activebackground="#37474F",
+            btn = tk.Button(sidebar, text="  " + label, anchor="w", relief="flat",
+                             bg=COLOR_SIDEBAR, fg="white",
+                             activebackground=COLOR_SIDEBAR_ACTIVE,
                              activeforeground="white", font=FONT, bd=0,
-                             padx=16, pady=10, command=lambda k=key: self._show_view(k))
-            btn.pack(fill="x")
+                             cursor="hand2",
+                             padx=16, pady=12, command=lambda k=key: self._show_view(k))
+            btn.pack(fill="x", padx=8, pady=2)
             self.sidebar_buttons[key] = btn
 
-        self.content = tk.Frame(container)
+        self.content = tk.Frame(container, bg=COLOR_BG)
         self.content.pack(side="left", fill="both", expand=True)
 
         self.views = {}
         self._build_order_view()
         self._build_history_view()
-        for key in ("report_summary", "report_products", "report_clients",
-                    "report_geo", "report_carriers", "report_dynamics"):
+        for key, _label in REPORT_MENU_ITEMS:
             self._build_report_view(key)
 
         self._show_view("order")
+
+        # -- фонове відстеження статусу доставок --
+        self._toast_stack = []
+        self._tracking_in_progress = False
+        self._tracking_after_id = None
+        self.after(3000, self._run_tracking_check_async)
+
+    def _get_tracking_interval_minutes(self):
+        try:
+            return max(1, int(db.get_setting("tracking_interval_minutes",
+                                              DEFAULT_TRACKING_INTERVAL_MINUTES)))
+        except (TypeError, ValueError):
+            return DEFAULT_TRACKING_INTERVAL_MINUTES
+
+    def _get_show_notifications_setting(self):
+        return db.get_setting("show_notifications", "1") != "0"
 
     def _set_app_icon(self):
         """Встановлює значок вікна/панелі завдань: .ico для Windows, .png як резерв."""
@@ -144,25 +241,48 @@ class App(tk.Tk):
             frame.pack_forget()
         self.views[key].pack(fill="both", expand=True)
         for k, btn in self.sidebar_buttons.items():
-            btn.configure(bg="#37474F" if k == key else "#263238")
+            btn.configure(bg=COLOR_SIDEBAR_ACTIVE if k == key else COLOR_SIDEBAR)
         if key == "history":
             self._refresh_history()
 
     # ------------------------------------------------------------------
-    # Меню
+    # Верхня панель: Файл / Налаштування / Звіти
     # ------------------------------------------------------------------
-    def _build_menu(self):
-        menubar = tk.Menu(self)
+    def _build_topbar(self):
+        topbar = tk.Frame(self, bg=COLOR_TOPBAR, height=42)
+        topbar.pack(fill="x", side="top")
+        topbar.pack_propagate(False)
 
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Завантажити прайс-лист...", command=self._import_price_dialog)
-        menubar.add_cascade(label="Файл", menu=file_menu)
+        self._topbar_buttons = {}
 
-        settings_menu = tk.Menu(menubar, tearoff=0)
-        settings_menu.add_command(label="Телефони відправника...", command=self._sender_phones_dialog)
-        menubar.add_cascade(label="Налаштування", menu=settings_menu)
+        def make_topbar_button(text, build_menu_fn):
+            btn = tk.Menubutton(topbar, text=text, font=FONT_TOPBAR_BOLD,
+                                 bg=COLOR_TOPBAR, fg="white",
+                                 activebackground=COLOR_TOPBAR_HOVER,
+                                 activeforeground="white",
+                                 bd=0, relief="flat", padx=18, pady=9,
+                                 cursor="hand2")
+            menu = tk.Menu(btn, tearoff=0, font=FONT_TOPBAR)
+            build_menu_fn(menu)
+            btn.configure(menu=menu)
+            btn.pack(side="left")
+            return btn
 
-        self.config(menu=menubar)
+        make_topbar_button("Файл", self._populate_file_menu)
+        make_topbar_button("Налаштування", self._populate_settings_menu)
+        make_topbar_button("Звіти", self._populate_reports_menu)
+
+    def _populate_file_menu(self, menu):
+        menu.add_command(label="Завантажити прайс-лист...", command=self._import_price_dialog)
+
+    def _populate_settings_menu(self, menu):
+        menu.add_command(label="Телефони відправника...", command=self._sender_phones_dialog)
+        menu.add_command(label="API-ключі перевізників...", command=self._carrier_api_dialog)
+        menu.add_command(label="Сповіщення та відстеження...", command=self._tracking_settings_dialog)
+
+    def _populate_reports_menu(self, menu):
+        for key, label in REPORT_MENU_ITEMS:
+            menu.add_command(label=label, command=lambda k=key: self._show_view(k))
 
     def _import_price_dialog(self):
         path = filedialog.askopenfilename(
@@ -201,34 +321,62 @@ class App(tk.Tk):
     def _sender_phones_dialog(self):
         win = tk.Toplevel(self)
         win.title("Телефони відправника за способом оплати")
-        win.geometry("440x340")
+        win.configure(bg=COLOR_BG)
+        win.transient(self)
+        win.resizable(False, False)
 
-        tree = ttk.Treeview(win, columns=("phone",), show="tree headings", height=10)
+        wrap = tk.Frame(win, bg=COLOR_BG, padx=16, pady=16)
+        wrap.pack(fill="both", expand=True)
+
+        tk.Label(wrap, text="Телефони відправника за способом оплати",
+                 font=FONT_BOLD, bg=COLOR_BG, fg=COLOR_TEXT).pack(anchor="w", pady=(0, 10))
+
+        tree = ttk.Treeview(wrap, columns=("phone", "sender_name"), show="tree headings", height=7)
         tree.heading("#0", text="Спосіб оплати")
         tree.heading("phone", text="Телефон")
-        tree.pack(fill="both", expand=True, padx=8, pady=8)
+        tree.heading("sender_name", text="Ім'я відправника")
+        tree.column("#0", width=180)
+        tree.column("phone", width=160)
+        tree.column("sender_name", width=200)
+        tree.pack(fill="both", expand=True)
 
         def refresh():
             tree.delete(*tree.get_children())
-            for method, phone in db.get_sender_phones().items():
-                tree.insert("", "end", text=method, values=(phone,))
+            for method, details in db.get_sender_phone_details().items():
+                tree.insert("", "end", text=method,
+                            values=(details["phone"], details.get("sender_name") or ""))
         refresh()
 
-        form = tk.Frame(win)
-        form.pack(fill="x", padx=8, pady=4)
-        tk.Label(form, text="Спосіб оплати:").grid(row=0, column=0, sticky="w")
+        form = tk.LabelFrame(wrap, text="Додати / оновити", font=FONT_SMALL,
+                              bg=COLOR_BG, fg=COLOR_TEXT_MUTED, padx=12, pady=10)
+        form.pack(fill="x", pady=(14, 0))
+
+        tk.Label(form, text="Спосіб оплати:", bg=COLOR_BG, font=FONT).grid(
+            row=0, column=0, sticky="w", pady=4)
         method_var = tk.StringVar()
-        tk.Entry(form, textvariable=method_var, width=20, font=FONT).grid(row=0, column=1)
-        tk.Label(form, text="Телефон:").grid(row=1, column=0, sticky="w")
+        tk.Entry(form, textvariable=method_var, width=22, font=FONT).grid(
+            row=0, column=1, padx=(8, 0), pady=4)
+
+        tk.Label(form, text="Телефон:", bg=COLOR_BG, font=FONT).grid(
+            row=1, column=0, sticky="w", pady=4)
         phone_var = tk.StringVar()
-        tk.Entry(form, textvariable=phone_var, width=20, font=FONT).grid(row=1, column=1)
+        tk.Entry(form, textvariable=phone_var, width=22, font=FONT).grid(
+            row=1, column=1, padx=(8, 0), pady=4)
+
+        tk.Label(form, text="Ім'я відправника:", bg=COLOR_BG, font=FONT).grid(
+            row=2, column=0, sticky="w", pady=4)
+        sender_name_var = tk.StringVar()
+        tk.Entry(form, textvariable=sender_name_var, width=22, font=FONT).grid(
+            row=2, column=1, padx=(8, 0), pady=4)
 
         def add_or_update():
             if not method_var.get().strip() or not phone_var.get().strip():
                 return
-            db.set_sender_phone(method_var.get().strip(), phone_var.get().strip())
+            db.set_sender_phone(method_var.get().strip(), phone_var.get().strip(),
+                                 sender_name_var.get().strip() or None)
             method_var.set("")
             phone_var.set("")
+            sender_name_var.set("")
             refresh()
             self._reload_payment_methods()
 
@@ -241,10 +389,234 @@ class App(tk.Tk):
             refresh()
             self._reload_payment_methods()
 
-        btns = tk.Frame(win)
-        btns.pack(fill="x", padx=8, pady=4)
-        tk.Button(btns, text="Додати / оновити", font=FONT, command=add_or_update).pack(side="left")
-        tk.Button(btns, text="Видалити вибране", font=FONT, command=delete_selected).pack(side="left", padx=6)
+        btns = tk.Frame(wrap, bg=COLOR_BG)
+        btns.pack(fill="x", pady=(12, 0))
+        tk.Button(btns, text="Додати / оновити", font=FONT, bg=COLOR_ACCENT, fg="white",
+                  activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                  relief="flat", padx=12, pady=6, cursor="hand2",
+                  command=add_or_update).pack(side="left")
+        tk.Button(btns, text="Видалити вибране", font=FONT, bg="#ECEFF1", fg=COLOR_TEXT,
+                  relief="flat", padx=12, pady=6, cursor="hand2",
+                  command=delete_selected).pack(side="left", padx=8)
+
+        win.update_idletasks()
+        req_w = max(win.winfo_reqwidth(), 460)
+        req_h = win.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - req_w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - req_h) // 2
+        win.geometry(f"{req_w}x{req_h}+{max(x, 0)}+{max(y, 0)}")
+
+    def _carrier_api_dialog(self):
+        win = tk.Toplevel(self)
+        win.title("API-ключі перевізників")
+        win.configure(bg=COLOR_BG)
+        win.transient(self)
+        win.resizable(False, False)
+
+        wrap = tk.Frame(win, bg=COLOR_BG, padx=16, pady=16)
+        wrap.pack(fill="both", expand=True)
+
+        tk.Label(wrap, text="API-ключі перевізників", font=FONT_BOLD,
+                 bg=COLOR_BG, fg=COLOR_TEXT).pack(anchor="w", pady=(0, 4))
+        tk.Label(wrap, text="Потрібні для автоматичного створення ТТН при формуванні заявки.",
+                 font=FONT_SMALL, bg=COLOR_BG, fg=COLOR_TEXT_MUTED,
+                 wraplength=480, justify="left").pack(anchor="w", pady=(0, 12))
+
+        status_tree = ttk.Treeview(wrap, columns=("status",), show="tree headings", height=3)
+        status_tree.heading("#0", text="Перевізник")
+        status_tree.heading("status", text="Статус")
+        status_tree.column("#0", width=180)
+        status_tree.column("status", width=280)
+        status_tree.pack(fill="x", pady=(0, 14))
+
+        def refresh_status():
+            status_tree.delete(*status_tree.get_children())
+            saved = db.list_carrier_credentials()
+            for carrier in CARRIERS[:-1]:  # без "Самовивіз"
+                creds = saved.get(carrier)
+                if not creds or not creds.get("api_key"):
+                    status = "не налаштовано"
+                elif carrier == "Нова Пошта":
+                    extra = creds.get("extra") or {}
+                    required = ["sender_city", "sender_warehouse",
+                                "sender_counterparty_ref", "sender_contact_ref"]
+                    if all(extra.get(f) for f in required):
+                        status = "налаштовано повністю"
+                    else:
+                        status = "ключ є, не вистачає даних відправника"
+                else:
+                    status = "ключ збережено (автоматичне ТТН недоступне)"
+                status_tree.insert("", "end", text=carrier, values=(status,))
+        refresh_status()
+
+        form = tk.LabelFrame(wrap, text="Редагувати", font=FONT_SMALL,
+                              bg=COLOR_BG, fg=COLOR_TEXT_MUTED, padx=12, pady=10)
+        form.pack(fill="x")
+
+        tk.Label(form, text="Перевізник:", bg=COLOR_BG, font=FONT).grid(
+            row=0, column=0, sticky="w", pady=4)
+        carrier_var = tk.StringVar(value=CARRIERS[0])
+        carrier_combo = ttk.Combobox(form, textvariable=carrier_var, values=CARRIERS[:-1],
+                                      state="readonly", width=24, font=FONT)
+        carrier_combo.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=4)
+
+        tk.Label(form, text="API-ключ:", bg=COLOR_BG, font=FONT).grid(
+            row=1, column=0, sticky="w", pady=4)
+        api_key_var = tk.StringVar()
+        api_key_entry = tk.Entry(form, textvariable=api_key_var, width=34, font=FONT, show="•")
+        api_key_entry.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=4)
+
+        show_key_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(form, text="показати ключ", variable=show_key_var, bg=COLOR_BG,
+                        font=FONT_SMALL,
+                        command=lambda: api_key_entry.configure(
+                            show="" if show_key_var.get() else "•")
+                        ).grid(row=1, column=2, sticky="w", padx=(8, 0))
+
+        # -- поля, специфічні для Нової Пошти --
+        np_frame = tk.Frame(form, bg=COLOR_BG)
+        np_frame.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+        tk.Label(np_frame, text="Місто відправника:", bg=COLOR_BG, font=FONT).grid(
+            row=0, column=0, sticky="w", pady=3)
+        sender_city_var = tk.StringVar()
+        tk.Entry(np_frame, textvariable=sender_city_var, width=24, font=FONT).grid(
+            row=0, column=1, sticky="w", padx=(8, 0), pady=3)
+
+        tk.Label(np_frame, text="№ відділення відправника:", bg=COLOR_BG, font=FONT).grid(
+            row=1, column=0, sticky="w", pady=3)
+        sender_warehouse_var = tk.StringVar()
+        tk.Entry(np_frame, textvariable=sender_warehouse_var, width=24, font=FONT).grid(
+            row=1, column=1, sticky="w", padx=(8, 0), pady=3)
+
+        tk.Label(np_frame, text="Ref контрагента-відправника:", bg=COLOR_BG, font=FONT).grid(
+            row=2, column=0, sticky="w", pady=3)
+        sender_cp_ref_var = tk.StringVar()
+        tk.Entry(np_frame, textvariable=sender_cp_ref_var, width=24, font=FONT).grid(
+            row=2, column=1, sticky="w", padx=(8, 0), pady=3)
+
+        tk.Label(np_frame, text="Ref контактної особи відправника:", bg=COLOR_BG, font=FONT).grid(
+            row=3, column=0, sticky="w", pady=3)
+        sender_contact_ref_var = tk.StringVar()
+        tk.Entry(np_frame, textvariable=sender_contact_ref_var, width=24, font=FONT).grid(
+            row=3, column=1, sticky="w", padx=(8, 0), pady=3)
+
+        tk.Label(np_frame,
+                 text="Ref контрагента й контактної особи відправника — це ваші\n"
+                      "ідентифікатори в системі Нової Пошти. Їх можна отримати в\n"
+                      "особистому кабінеті на my.novaposhta.ua (розділ «Контрагенти»)\n"
+                      "або у службі підтримки Нової Пошти для вашого бізнес-акаунту.",
+                 bg=COLOR_BG, fg=COLOR_TEXT_MUTED, font=FONT_SMALL,
+                 justify="left").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        def load_carrier(*_args):
+            carrier = carrier_var.get()
+            creds = db.get_carrier_credentials(carrier) or {}
+            api_key_var.set(creds.get("api_key") or "")
+            extra = creds.get("extra") or {}
+            sender_city_var.set(extra.get("sender_city") or "")
+            sender_warehouse_var.set(extra.get("sender_warehouse") or "")
+            sender_cp_ref_var.set(extra.get("sender_counterparty_ref") or "")
+            sender_contact_ref_var.set(extra.get("sender_contact_ref") or "")
+            if carrier == "Нова Пошта":
+                np_frame.grid()
+            else:
+                np_frame.grid_remove()
+
+        carrier_combo.bind("<<ComboboxSelected>>", load_carrier)
+        load_carrier()
+
+        def save_carrier():
+            carrier = carrier_var.get()
+            extra = {}
+            if carrier == "Нова Пошта":
+                extra = {
+                    "sender_city": sender_city_var.get().strip(),
+                    "sender_warehouse": sender_warehouse_var.get().strip(),
+                    "sender_counterparty_ref": sender_cp_ref_var.get().strip(),
+                    "sender_contact_ref": sender_contact_ref_var.get().strip(),
+                }
+            db.set_carrier_credentials(carrier, api_key_var.get().strip(), extra)
+            refresh_status()
+            self._reload_ttn_carrier_options()
+            messagebox.showinfo("Готово", f"Дані для «{carrier}» збережено.")
+
+        def delete_carrier():
+            carrier = carrier_var.get()
+            db.delete_carrier_credentials(carrier)
+            load_carrier()
+            refresh_status()
+            self._reload_ttn_carrier_options()
+
+        btns = tk.Frame(wrap, bg=COLOR_BG)
+        btns.pack(fill="x", pady=(12, 0))
+        tk.Button(btns, text="Зберегти", font=FONT, bg=COLOR_ACCENT, fg="white",
+                  activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                  relief="flat", padx=12, pady=6, cursor="hand2",
+                  command=save_carrier).pack(side="left")
+        tk.Button(btns, text="Видалити ключ", font=FONT, bg="#ECEFF1", fg=COLOR_TEXT,
+                  relief="flat", padx=12, pady=6, cursor="hand2",
+                  command=delete_carrier).pack(side="left", padx=8)
+
+        win.update_idletasks()
+        req_w = max(win.winfo_reqwidth(), 520)
+        req_h = win.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - req_w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - req_h) // 2
+        win.geometry(f"{req_w}x{req_h}+{max(x, 0)}+{max(y, 0)}")
+
+    def _tracking_settings_dialog(self):
+        win = tk.Toplevel(self)
+        win.title("Сповіщення та відстеження")
+        win.configure(bg=COLOR_BG)
+        win.transient(self)
+        win.resizable(False, False)
+
+        wrap = tk.Frame(win, bg=COLOR_BG, padx=16, pady=16)
+        wrap.pack(fill="both", expand=True)
+
+        tk.Label(wrap, text="Сповіщення та відстеження доставок", font=FONT_BOLD,
+                 bg=COLOR_BG, fg=COLOR_TEXT).pack(anchor="w", pady=(0, 4))
+        tk.Label(wrap,
+                 text="Програма автоматично перевіряє статус заявок з ТТН при запуску,\n"
+                      "а далі — з обраним інтервалом, поки програма відкрита (навіть згорнута).",
+                 font=FONT_SMALL, bg=COLOR_BG, fg=COLOR_TEXT_MUTED,
+                 justify="left").pack(anchor="w", pady=(0, 14))
+
+        show_var = tk.BooleanVar(value=self._get_show_notifications_setting())
+        tk.Checkbutton(wrap, text="Показувати спливаючі повідомлення про зміну статусу доставки",
+                        variable=show_var, font=FONT, bg=COLOR_BG).pack(anchor="w")
+
+        interval_frame = tk.Frame(wrap, bg=COLOR_BG)
+        interval_frame.pack(anchor="w", pady=(12, 0))
+        tk.Label(interval_frame, text="Перевіряти статус кожні", font=FONT,
+                 bg=COLOR_BG).pack(side="left")
+        interval_var = tk.StringVar(value=str(self._get_tracking_interval_minutes()))
+        tk.Entry(interval_frame, textvariable=interval_var, width=5, font=FONT).pack(side="left", padx=6)
+        tk.Label(interval_frame, text="хв", font=FONT, bg=COLOR_BG).pack(side="left")
+
+        def save_and_close():
+            try:
+                minutes = max(1, int(interval_var.get().strip()))
+            except ValueError:
+                messagebox.showerror("Помилка", "Інтервал має бути цілим числом хвилин.")
+                return
+            db.set_setting("tracking_interval_minutes", minutes)
+            db.set_setting("show_notifications", "1" if show_var.get() else "0")
+            win.destroy()
+            messagebox.showinfo("Готово", "Налаштування збережено.")
+
+        tk.Button(wrap, text="Зберегти", font=FONT, bg=COLOR_ACCENT, fg="white",
+                  activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                  relief="flat", padx=12, pady=6, cursor="hand2",
+                  command=save_and_close).pack(anchor="w", pady=(16, 0))
+
+        win.update_idletasks()
+        req_w = max(win.winfo_reqwidth(), 480)
+        req_h = win.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - req_w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - req_h) // 2
+        win.geometry(f"{req_w}x{req_h}+{max(x, 0)}+{max(y, 0)}")
 
     # ------------------------------------------------------------------
     # "Нова заявка"
@@ -260,11 +632,17 @@ class App(tk.Tk):
         top.pack(fill="x", padx=14, pady=10)
 
         left = tk.Frame(top)
-        left.pack(side="left", fill="both", expand=True)
+        left.pack(side="left", fill="both", expand=True, anchor="n")
         right = tk.Frame(top)
-        right.pack(side="left", fill="both", expand=True, padx=(24, 0))
+        right.pack(side="left", fill="both", expand=True, padx=(28, 0), anchor="n")
 
-        r = 0
+        tk.Label(left, text="ВІДПРАВНИК", font=FONT_BOLD, fg=COLOR_ACCENT_DARK,
+                 bg=COLOR_BG).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        tk.Label(right, text="ПОКУПЕЦЬ ТА ОДЕРЖУВАЧ", font=FONT_BOLD, fg=COLOR_ACCENT_DARK,
+                 bg=COLOR_BG).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        # ================= ЛІВА КОЛОНКА: ВІДПРАВНИК =================
+        r = 1
         tk.Label(left, text="№ заявки:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
         self.order_number_var = tk.StringVar()
         tk.Entry(left, textvariable=self.order_number_var, width=16, font=FONT).grid(row=r, column=1, sticky="w")
@@ -272,19 +650,6 @@ class App(tk.Tk):
 
         tk.Label(left, text="Дата створення:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
         tk.Label(left, text=date.today().strftime("%d.%m.%Y"), font=FONT).grid(row=r, column=1, sticky="w")
-        r += 1
-
-        tk.Label(left, text="Покупець:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
-        self.buyer_entry = AutocompleteEntry(
-            left, search_fn=self._search_clients_fn, on_select=self._on_client_selected,
-            width=30, font=FONT
-        )
-        self.buyer_entry.grid(row=r, column=1, sticky="w")
-        r += 1
-
-        tk.Label(left, text="Адреса покупця:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
-        self.buyer_address_var = tk.StringVar()
-        tk.Entry(left, textvariable=self.buyer_address_var, width=32, font=FONT).grid(row=r, column=1, sticky="w")
         r += 1
 
         tk.Label(left, text="Відповідальний, ПІБ:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
@@ -305,11 +670,32 @@ class App(tk.Tk):
         tk.Entry(left, textvariable=self.sender_phone_var, width=32, font=FONT).grid(row=r, column=1, sticky="w")
         r += 1
 
-        # -- права колонка --
-        r2 = 0
+        tk.Label(left, text="Ім'я відправника (для ТТН):", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
+        self.sender_name_var = tk.StringVar()
+        tk.Entry(left, textvariable=self.sender_name_var, width=32, font=FONT).grid(row=r, column=1, sticky="w")
+        r += 1
+
+        # ================= ПРАВА КОЛОНКА: ПОКУПЕЦЬ ТА ОДЕРЖУВАЧ =================
+        r2 = 1
+        tk.Label(right, text="Покупець:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
+        self.buyer_entry = AutocompleteEntry(
+            right, search_fn=self._search_clients_fn, on_select=self._on_client_selected,
+            width=30, font=FONT
+        )
+        self.buyer_entry.grid(row=r2, column=1, sticky="w")
+        r2 += 1
+
+        tk.Label(right, text="Адреса покупця:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
+        self.buyer_address_var = tk.StringVar()
+        tk.Entry(right, textvariable=self.buyer_address_var, width=32, font=FONT).grid(row=r2, column=1, sticky="w")
+        r2 += 1
+
         tk.Label(right, text="Телефон одержувача:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
-        self.recipient_phone_var = tk.StringVar()
-        tk.Entry(right, textvariable=self.recipient_phone_var, width=32, font=FONT).grid(row=r2, column=1, sticky="w")
+        self.recipient_phone_entry = AutocompleteEntry(
+            right, search_fn=self._search_clients_by_phone_fn, on_select=self._on_client_selected,
+            width=30, font=FONT
+        )
+        self.recipient_phone_entry.grid(row=r2, column=1, sticky="w")
         r2 += 1
 
         tk.Label(right, text="Перевізник:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
@@ -376,7 +762,32 @@ class App(tk.Tk):
         tk.Entry(right, textvariable=self.recipient_name_var, width=32, font=FONT).grid(row=r2, column=1, sticky="w")
         r2 += 1
 
+        tk.Label(right, text="", bg=COLOR_BG).grid(row=r2, column=0)
+        r2 += 1
+
+        ttn_frame = tk.Frame(right, bg=COLOR_BG)
+        ttn_frame.grid(row=r2, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        self.auto_ttn_var = tk.BooleanVar(value=True)
+        self.auto_ttn_check = tk.Checkbutton(
+            ttn_frame, text="Створити ТТН автоматично при формуванні заявки",
+            variable=self.auto_ttn_var, font=FONT, bg=COLOR_BG
+        )
+        self.auto_ttn_check.pack(anchor="w")
+        self.ttn_status_label = tk.Label(ttn_frame, text="", font=FONT_SMALL,
+                                          bg=COLOR_BG, fg=COLOR_TEXT_MUTED,
+                                          wraplength=340, justify="left")
+        self.ttn_status_label.pack(anchor="w", pady=(2, 0))
+        r2 += 1
+
+        tk.Label(right, text="№ ТТН:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
+        self.ttn_var = tk.StringVar()
+        tk.Entry(right, textvariable=self.ttn_var, width=32, font=FONT_BOLD,
+                 state="readonly", readonlybackground="white",
+                 fg=COLOR_ACCENT_DARK).grid(row=r2, column=1, sticky="w")
+        r2 += 1
+
         self._apply_delivery_state()
+        self._update_ttn_availability_hint()
 
         # -- рядок додавання товару --
         add_frame = tk.LabelFrame(canvas_wrap, text="Додати товар", font=FONT)
@@ -405,7 +816,9 @@ class App(tk.Tk):
         self.item_qty_var = tk.StringVar(value="1")
         tk.Entry(add_frame, textvariable=self.item_qty_var, width=6, font=FONT).grid(row=0, column=9)
 
-        tk.Button(add_frame, text="+", width=3, font=FONT_BOLD, command=self._add_item).grid(row=0, column=10, padx=8)
+        tk.Button(add_frame, text="+", width=3, font=FONT_BOLD, bg=COLOR_ACCENT, fg="white",
+                  activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                  command=self._add_item).grid(row=0, column=10, padx=8)
 
         # -- таблиця товарів --
         table_frame = tk.Frame(canvas_wrap)
@@ -428,8 +841,9 @@ class App(tk.Tk):
         self.totals_label = tk.Label(canvas_wrap, text="Разом: 0.00 грн,  0.00 кг", font=FONT_BOLD)
         self.totals_label.pack(anchor="e", padx=14, pady=4)
 
-        tk.Button(canvas_wrap, text="Сформувати заявку", bg="#2e7d32", fg="white",
-                  font=FONT_BOLD, command=self._generate_order).pack(pady=8)
+        tk.Button(canvas_wrap, text="Сформувати заявку", bg=COLOR_ACCENT, fg="white",
+                  activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                  font=FONT_BOLD, padx=22, pady=10, command=self._generate_order).pack(pady=10)
 
     def _reload_payment_methods(self):
         self.payment_combo["values"] = list(db.get_sender_phones().keys())
@@ -471,9 +885,59 @@ class App(tk.Tk):
 
     def _on_carrier_changed(self, event=None):
         self._apply_delivery_state()
+        self._update_ttn_availability_hint()
 
     def _on_delivery_type_changed(self):
         self._apply_delivery_state()
+        self._update_ttn_availability_hint()
+
+    def _update_ttn_availability_hint(self):
+        """Показує під прапорцем «Створити ТТН автоматично» коротку підказку
+        про те, чи налаштовано автоматичне створення для поточного перевізника."""
+        carrier = self.carrier_var.get()
+        if carrier == "Самовивіз":
+            self.auto_ttn_check.configure(state="disabled")
+            self.auto_ttn_var.set(False)
+            self.ttn_status_label.configure(text="Самовивіз не потребує ТТН.")
+            return
+
+        self.auto_ttn_check.configure(state="normal")
+
+        if carrier != "Нова Пошта":
+            self.ttn_status_label.configure(
+                text=f"Автоматичне ТТН для «{carrier}» поки не підключено — "
+                     f"потрібна документація API цього перевізника."
+            )
+            return
+
+        creds = db.get_carrier_credentials("Нова Пошта")
+        if not creds or not creds.get("api_key"):
+            self.ttn_status_label.configure(
+                text="API-ключ Нової Пошти не налаштовано "
+                     "(Налаштування → API-ключі перевізників)."
+            )
+            return
+        extra = creds.get("extra") or {}
+        required = ["sender_city", "sender_warehouse",
+                    "sender_counterparty_ref", "sender_contact_ref"]
+        if not all(extra.get(f) for f in required):
+            self.ttn_status_label.configure(
+                text="Не вистачає даних відправника Нової Пошти "
+                     "(Налаштування → API-ключі перевізників)."
+            )
+            return
+        if self.delivery_type_var.get() != "branch":
+            self.ttn_status_label.configure(
+                text="Автоматичне ТТН підтримується лише для доставки «На відділення»."
+            )
+            return
+        self.ttn_status_label.configure(text="Готово до автоматичного створення ТТН.")
+
+    def _reload_ttn_carrier_options(self):
+        """Викликається після збереження API-ключів у налаштуваннях,
+        щоб підказка на формі заявки одразу оновилась."""
+        if hasattr(self, "ttn_status_label"):
+            self._update_ttn_availability_hint()
 
     # -- пошукові функції для автодоповнення --
     def _search_clients_fn(self, text):
@@ -496,11 +960,17 @@ class App(tk.Tk):
         products = db.search_products(text)
         return [(f"{p['name']} ({p['code']})" if p["code"] else p["name"], p) for p in products]
 
+    def _search_clients_by_phone_fn(self, text):
+        clients = db.search_clients_by_phone(text)
+        return [(c["phone"], c) for c in clients if c.get("phone")]
+
     # -- обробники вибору --
     def _on_client_selected(self, label, client):
         self.selected_client = client
         self.buyer_address_var.set(client.get("address") or "")
-        self.recipient_phone_var.set(client.get("phone") or "")
+        self.recipient_phone_entry.set(client.get("phone") or "")
+        if not self.buyer_entry.get().strip():
+            self.buyer_entry.set(client.get("full_name") or "")
         self.oblast_entry.set(client.get("oblast") or "")
         self.city_entry.set(client.get("city") or "")
         self.recipient_name_var.set(client.get("full_name") or "")
@@ -517,9 +987,10 @@ class App(tk.Tk):
 
     def _on_payment_selected(self, event=None):
         method = self.payment_var.get()
-        phones = db.get_sender_phones()
-        if method in phones:
-            self.sender_phone_var.set(phones[method])
+        details = db.get_sender_phone_details()
+        if method in details:
+            self.sender_phone_var.set(details[method]["phone"] or "")
+            self.sender_name_var.set(details[method]["sender_name"] or "")
 
     def _on_oblast_selected(self, label, payload):
         self.city_entry.set("")
@@ -614,7 +1085,7 @@ class App(tk.Tk):
 
         client_id = db.upsert_client(
             full_name=buyer_name,
-            phone=self.recipient_phone_var.get().strip() or None,
+            phone=self.recipient_phone_entry.get().strip() or None,
             oblast=oblast or None,
             city=city or None,
             address=self.buyer_address_var.get().strip() or None,
@@ -636,7 +1107,8 @@ class App(tk.Tk):
             "responsible": self.responsible_var.get().strip() or "ЧСМ",
             "payment_method": self.payment_var.get().strip(),
             "sender_phone": self.sender_phone_var.get().strip(),
-            "recipient_phone": self.recipient_phone_var.get().strip(),
+            "sender_name": self.sender_name_var.get().strip(),
+            "recipient_phone": self.recipient_phone_entry.get().strip(),
             "carrier": carrier,
             "carrier_branch": self.carrier_branch_var.get().strip() if delivery_type == "branch" else "",
             "delivery_type": delivery_type,
@@ -658,13 +1130,42 @@ class App(tk.Tk):
             row["seq_no"] = i
             items_for_export.append(row)
 
+        # -- автоматичне створення ТТН (якщо увімкнено і перевізник підтримується) --
+        header["ttn"] = None
+        header["ttn_status"] = None
+        header["ttn_error"] = None
+        self.ttn_var.set("")
+        if self.auto_ttn_var.get() and carrier != "Самовивіз":
+            credentials = db.get_carrier_credentials(carrier)
+            try:
+                self.config(cursor="watch")
+                self.update_idletasks()
+                result = carriers.create_ttn(carrier, header, self.current_items, credentials)
+                header["ttn"] = result["ttn"]
+                header["ttn_status"] = "created"
+                self.ttn_var.set(result["ttn"])
+            except carriers.CarrierAPIError as e:
+                header["ttn_status"] = "failed"
+                header["ttn_error"] = str(e)
+                messagebox.showwarning(
+                    "ТТН не створено",
+                    f"Заявку буде сформовано без ТТН. Причина:\n\n{e}\n\n"
+                    f"Ви можете створити ТТН вручну на сайті перевізника і "
+                    f"пізніше повернутись до цього."
+                )
+            finally:
+                self.config(cursor="")
+
         filename = order_export.build_filename(buyer_name, order_date, header["order_number"])
         output_path = os.path.join(OUTPUT_DIR, filename)
         order_export.generate_order_excel(header, items_for_export, output_path)
 
         db.save_order(header, self.current_items, filename)
 
-        messagebox.showinfo("Готово", f"Заявку збережено:\n{output_path}")
+        if header.get("ttn"):
+            messagebox.showinfo("Готово", f"Заявку збережено:\n{output_path}\n\n№ ТТН: {header['ttn']}")
+        else:
+            messagebox.showinfo("Готово", f"Заявку збережено:\n{output_path}")
         self._reset_order_form()
 
     def _reset_order_form(self):
@@ -673,7 +1174,8 @@ class App(tk.Tk):
         self.buyer_address_var.set("")
         self.payment_var.set("")
         self.sender_phone_var.set("")
-        self.recipient_phone_var.set("")
+        self.sender_name_var.set("")
+        self.recipient_phone_entry.set("")
         self.carrier_var.set(CARRIERS[0])
         self.delivery_type_var.set("branch")
         self.carrier_branch_var.set("")
@@ -683,10 +1185,134 @@ class App(tk.Tk):
         self.oblast_entry.set("")
         self.city_entry.set("")
         self.recipient_name_var.set("")
+        self.ttn_var.set("")
+        self.auto_ttn_var.set(True)
         self.current_items = []
         self.items_tree.delete(*self.items_tree.get_children())
         self._update_totals()
         self._apply_delivery_state()
+        self._update_ttn_availability_hint()
+
+    # ------------------------------------------------------------------
+    # Фонове відстеження статусу доставок
+    # ------------------------------------------------------------------
+    def _run_tracking_check_async(self):
+        if self._tracking_in_progress:
+            return
+        orders = db.list_active_ttn_orders()
+        if not orders:
+            self._schedule_next_tracking_check()
+            return
+        self._tracking_in_progress = True
+        threading.Thread(target=self._tracking_check_worker, args=(orders,), daemon=True).start()
+
+    def _tracking_check_worker(self, orders):
+        results = []
+        for o in orders:
+            carrier = o.get("carrier")
+            ttn = o.get("ttn")
+            if not carrier or not ttn:
+                continue
+            credentials = db.get_carrier_credentials(carrier)
+            try:
+                result = carriers.track_status(carrier, ttn, credentials, o.get("recipient_phone"))
+                results.append((o, result, None))
+            except carriers.CarrierAPIError as e:
+                results.append((o, None, str(e)))
+        self.after(0, lambda: self._apply_tracking_results(results))
+
+    def _apply_tracking_results(self, results):
+        show_notifications = self._get_show_notifications_setting()
+        for o, result, error in results:
+            if result is None:
+                continue  # тиха помилка перевірки одного ТТН не повинна заважати іншим
+            new_status = result["status"]
+            delivered = result["delivered"]
+            old_status = o.get("tracking_status")
+            db.update_order_tracking(o["id"], new_status,
+                                      json.dumps(result.get("raw") or {}, ensure_ascii=False),
+                                      delivered)
+            if new_status != old_status and show_notifications:
+                recipient_name = o.get("recipient_name") or o.get("buyer_name") or "Одержувач"
+                city = o.get("recipient_city") or ""
+                city_part = f" м. {city}" if city else ""
+                if delivered:
+                    message = f"Відправлення для {recipient_name}{city_part} отримано."
+                else:
+                    message = f"Відправлення для {recipient_name}{city_part}: {new_status}."
+                self._show_notification_toast(message)
+
+        if results:
+            self._refresh_history()
+
+        self._tracking_in_progress = False
+        self._schedule_next_tracking_check()
+
+    def _schedule_next_tracking_check(self):
+        if self._tracking_after_id is not None:
+            try:
+                self.after_cancel(self._tracking_after_id)
+            except (ValueError, tk.TclError):
+                pass
+        interval_ms = self._get_tracking_interval_minutes() * 60 * 1000
+        self._tracking_after_id = self.after(interval_ms, self._run_tracking_check_async)
+
+    # ------------------------------------------------------------------
+    # Спливаючі повідомлення (знизу справа екрана)
+    # ------------------------------------------------------------------
+    def _show_notification_toast(self, message):
+        toast = tk.Toplevel(self)
+        toast.overrideredirect(True)
+        try:
+            toast.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        toast.configure(bg=COLOR_CARD, highlightthickness=1, highlightbackground=COLOR_BORDER)
+
+        content = tk.Frame(toast, bg=COLOR_CARD, padx=12, pady=10)
+        content.pack(fill="both", expand=True)
+
+        header = tk.Frame(content, bg=COLOR_CARD)
+        header.pack(fill="x")
+        tk.Label(header, text="Ordex — статус доставки", font=FONT_BOLD, bg=COLOR_CARD,
+                 fg=COLOR_ACCENT_DARK).pack(side="left")
+        tk.Button(header, text="✕", font=FONT_SMALL, bg=COLOR_CARD, fg=COLOR_TEXT_MUTED,
+                  bd=0, relief="flat", cursor="hand2", padx=4, pady=0,
+                  activebackground=COLOR_CARD,
+                  command=lambda: self._close_toast(toast)).pack(side="right")
+
+        tk.Label(content, text=message, font=FONT_SMALL, bg=COLOR_CARD, fg=COLOR_TEXT,
+                 wraplength=TOAST_WIDTH - 24, justify="left").pack(fill="x", pady=(6, 0), anchor="w")
+
+        toast.update_idletasks()
+        req_h = toast.winfo_reqheight()
+        toast.geometry(f"{TOAST_WIDTH}x{req_h}")
+
+        self._toast_stack.append(toast)
+        self._reposition_toasts()
+
+    def _close_toast(self, toast):
+        if toast in self._toast_stack:
+            self._toast_stack.remove(toast)
+        if toast.winfo_exists():
+            toast.destroy()
+        self._reposition_toasts()
+
+    def _reposition_toasts(self):
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        margin_right = 20
+        margin_bottom = 60  # орієнтовно над панеллю завдань, біля годинника
+        gap = 8
+        y_cursor = screen_h - margin_bottom
+        for toast in reversed(self._toast_stack):
+            if not toast.winfo_exists():
+                continue
+            h = toast.winfo_height() or toast.winfo_reqheight()
+            y_cursor -= h
+            x = screen_w - TOAST_WIDTH - margin_right
+            toast.geometry(f"+{x}+{y_cursor}")
+            y_cursor -= gap
 
     # ------------------------------------------------------------------
     # "Історія заявок"
@@ -695,15 +1321,27 @@ class App(tk.Tk):
         parent = tk.Frame(self.content)
         self.views["history"] = parent
 
-        tk.Label(parent, text="Історія заявок", font=FONT_TITLE).pack(anchor="w", padx=14, pady=(14, 6))
+        header_row = tk.Frame(parent)
+        header_row.pack(fill="x", padx=14, pady=(14, 6))
+        tk.Label(header_row, text="Історія заявок", font=FONT_TITLE).pack(side="left")
+        tk.Button(header_row, text="Перевірити статуси зараз", font=FONT,
+                  command=self._run_tracking_check_async).pack(side="right")
 
-        cols = ("number", "date", "buyer", "sum", "weight", "file")
-        headers = ["№", "Дата", "Покупець", "Сума", "Вага", "Файл"]
+        cols = ("number", "date", "buyer", "sum", "weight", "ttn", "status", "file")
+        headers = ["№", "Дата", "Покупець", "Сума", "Вага", "№ ТТН", "Статус доставки", "Файл"]
         self.history_tree = ttk.Treeview(parent, columns=cols, show="headings")
         for c, h in zip(cols, headers):
             self.history_tree.heading(c, text=h)
-            self.history_tree.column(c, width=140, anchor="center")
-        self.history_tree.column("buyer", width=220, anchor="w")
+            self.history_tree.column(c, width=110, anchor="center")
+        self.history_tree.column("buyer", width=190, anchor="w")
+        self.history_tree.column("ttn", width=130, anchor="center")
+        self.history_tree.column("status", width=200, anchor="w")
+
+        self.history_tree.tag_configure("delivered", background="#DCF3E6")
+        self.history_tree.tag_configure("in_transit", background="#FFF6DA")
+        self.history_tree.tag_configure("ttn_failed", background="#FBE1E1")
+        self.history_tree.tag_configure("no_ttn", background=COLOR_CARD)
+
         self.history_tree.pack(fill="both", expand=True, padx=14, pady=10)
 
         tk.Button(parent, text="Оновити список", font=FONT, command=self._refresh_history).pack(pady=4)
@@ -711,10 +1349,23 @@ class App(tk.Tk):
     def _refresh_history(self):
         self.history_tree.delete(*self.history_tree.get_children())
         for o in db.list_orders():
+            ttn_display = o.get("ttn") or ("не створено" if o.get("ttn_status") == "failed" else "")
+            status_display = o.get("tracking_status") or ""
+
+            if o.get("ttn_status") == "failed" and not o.get("ttn"):
+                tag = "ttn_failed"
+            elif o.get("tracking_delivered"):
+                tag = "delivered"
+            elif o.get("ttn") and status_display:
+                tag = "in_transit"
+            else:
+                tag = "no_ttn"
+
             self.history_tree.insert("", "end", values=(
                 o["order_number"], o["order_date"][:10] if o["order_date"] else "",
-                o["buyer_name"], o["total_sum"], o["total_weight"], o["file_name"]
-            ))
+                o["buyer_name"], o["total_sum"], o["total_weight"], ttn_display,
+                status_display, o["file_name"]
+            ), tags=(tag,))
 
     # ------------------------------------------------------------------
     # "Звіти та аналітика"
@@ -1028,5 +1679,6 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
+    enable_windows_dpi_awareness()
     app = App()
     app.mainloop()

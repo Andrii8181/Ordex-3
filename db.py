@@ -75,7 +75,8 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sender_phones (
             payment_method TEXT PRIMARY KEY,
-            phone TEXT NOT NULL
+            phone TEXT NOT NULL,
+            sender_name TEXT
         )
     """)
     cur.execute("""
@@ -138,6 +139,22 @@ def init_db():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS carrier_credentials (
+            carrier TEXT PRIMARY KEY,
+            api_key TEXT,
+            extra TEXT,          -- JSON з додатковими полями (місто/відділення відправника тощо)
+            updated_at TEXT
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    """)
+
     conn.commit()
 
     # безпечна міграція: додає нові колонки, якщо база створена старою версією програми
@@ -145,6 +162,36 @@ def init_db():
                           ("building", "TEXT"), ("apartment", "TEXT")]:
         _ensure_column(conn, "clients", col, coltype)
         _ensure_column(conn, "orders", col, coltype)
+    for col, coltype in [("ttn", "TEXT"), ("ttn_status", "TEXT"), ("ttn_error", "TEXT")]:
+        _ensure_column(conn, "orders", col, coltype)
+    for col, coltype in [("tracking_status", "TEXT"), ("tracking_status_raw", "TEXT"),
+                          ("tracking_updated_at", "TEXT"), ("tracking_delivered", "INTEGER")]:
+        _ensure_column(conn, "orders", col, coltype)
+    _ensure_column(conn, "orders", "sender_name", "TEXT")
+    _ensure_column(conn, "sender_phones", "sender_name", "TEXT")
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Налаштування програми (ключ-значення)
+# ---------------------------------------------------------------------------
+
+def get_setting(key, default=None):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+    row = cur.fetchone()
+    conn.close()
+    return row["value"] if row else default
+
+
+def set_setting(key, value):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO app_settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    """, (key, str(value)))
     conn.commit()
     conn.close()
 
@@ -274,6 +321,32 @@ def search_clients(prefix, limit=15):
     return result
 
 
+def _normalize_phone(phone):
+    return "".join(ch for ch in (phone or "") if ch.isdigit())
+
+
+def search_clients_by_phone(prefix, limit=15):
+    """
+    Пошук клієнта за телефоном — стійкий до форматування (пробіли, дужки,
+    тире): порівнюються лише цифри. Повертає клієнтів, чий номер містить
+    введені цифри як підрядок (щоб знайти навіть за останніми цифрами).
+    """
+    digits = _normalize_phone(prefix)
+    if not digits:
+        return []
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM clients WHERE phone IS NOT NULL AND phone != ''")
+    result = []
+    for row in cur.fetchall():
+        if digits in _normalize_phone(row["phone"]):
+            result.append(dict(row))
+            if len(result) >= limit:
+                break
+    conn.close()
+    return result
+
+
 def get_client_by_name(full_name):
     conn = get_connection()
     cur = conn.cursor()
@@ -318,12 +391,24 @@ def get_sender_phones():
     return result
 
 
-def set_sender_phone(payment_method, phone):
+def get_sender_phone_details():
+    """Повертає {payment_method: {'phone': ..., 'sender_name': ...}}."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM sender_phones ORDER BY payment_method")
+    result = {row["payment_method"]: {"phone": row["phone"], "sender_name": row["sender_name"]}
+              for row in cur.fetchall()}
+    conn.close()
+    return result
+
+
+def set_sender_phone(payment_method, phone, sender_name=None):
     conn = get_connection()
     conn.execute("""
-        INSERT INTO sender_phones (payment_method, phone) VALUES (?, ?)
-        ON CONFLICT(payment_method) DO UPDATE SET phone = excluded.phone
-    """, (payment_method, phone))
+        INSERT INTO sender_phones (payment_method, phone, sender_name) VALUES (?, ?, ?)
+        ON CONFLICT(payment_method) DO UPDATE SET phone = excluded.phone,
+                                                   sender_name = excluded.sender_name
+    """, (payment_method, phone, sender_name))
     conn.commit()
     conn.close()
 
@@ -350,16 +435,16 @@ def save_order(header, items, file_name):
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO orders (order_number, order_date, buyer_name, buyer_address,
-                             responsible, payment_method, sender_phone, recipient_phone,
-                             carrier, carrier_branch, delivery_type, street, building,
-                             apartment, recipient_oblast, recipient_city,
+                             responsible, payment_method, sender_phone, sender_name,
+                             recipient_phone, carrier, carrier_branch, delivery_type,
+                             street, building, apartment, recipient_oblast, recipient_city,
                              recipient_address, recipient_name, total_sum, total_weight,
-                             client_id, file_name, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             client_id, file_name, ttn, ttn_status, ttn_error, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         header["order_number"], header["order_date"], header["buyer_name"],
         header.get("buyer_address"), header.get("responsible"),
-        header.get("payment_method"), header.get("sender_phone"),
+        header.get("payment_method"), header.get("sender_phone"), header.get("sender_name"),
         header.get("recipient_phone"), header.get("carrier"),
         header.get("carrier_branch"), header.get("delivery_type"),
         header.get("street"), header.get("building"), header.get("apartment"),
@@ -367,6 +452,7 @@ def save_order(header, items, file_name):
         header.get("recipient_address"), header.get("recipient_name"),
         header.get("total_sum"), header.get("total_weight"),
         header.get("client_id"), file_name,
+        header.get("ttn"), header.get("ttn_status"), header.get("ttn_error"),
         datetime.now().isoformat(timespec="seconds"),
     ))
     order_id = cur.lastrowid
@@ -388,6 +474,100 @@ def list_orders(limit=200):
     cur = conn.cursor()
     cur.execute("SELECT * FROM orders ORDER BY id DESC LIMIT ?", (limit,))
     result = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Відстеження статусу доставки
+# ---------------------------------------------------------------------------
+
+def list_active_ttn_orders():
+    """Заявки з ТТН, які ще не позначені як доставлені — саме їх опитуємо."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT * FROM orders
+        WHERE ttn IS NOT NULL AND ttn != ''
+          AND (tracking_delivered IS NULL OR tracking_delivered = 0)
+        ORDER BY id DESC
+    """)
+    result = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return result
+
+
+def update_order_tracking(order_id, status_text, status_raw_json, delivered):
+    conn = get_connection()
+    conn.execute("""
+        UPDATE orders SET tracking_status = ?, tracking_status_raw = ?,
+                           tracking_updated_at = ?, tracking_delivered = ?
+        WHERE id = ?
+    """, (status_text, status_raw_json, datetime.now().isoformat(timespec="seconds"),
+          1 if delivered else 0, order_id))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# API-ключі перевізників
+# ---------------------------------------------------------------------------
+
+def get_carrier_credentials(carrier):
+    """Повертає {'api_key': str, 'extra': dict} або None, якщо не налаштовано."""
+    import json
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM carrier_credentials WHERE carrier = ?", (carrier,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    extra = {}
+    if row["extra"]:
+        try:
+            extra = json.loads(row["extra"])
+        except (ValueError, TypeError):
+            extra = {}
+    return {"api_key": row["api_key"], "extra": extra}
+
+
+def set_carrier_credentials(carrier, api_key, extra=None):
+    import json
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO carrier_credentials (carrier, api_key, extra, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(carrier) DO UPDATE SET api_key = excluded.api_key,
+                                            extra = excluded.extra,
+                                            updated_at = excluded.updated_at
+    """, (carrier, api_key, json.dumps(extra or {}, ensure_ascii=False),
+          datetime.now().isoformat(timespec="seconds")))
+    conn.commit()
+    conn.close()
+
+
+def delete_carrier_credentials(carrier):
+    conn = get_connection()
+    conn.execute("DELETE FROM carrier_credentials WHERE carrier = ?", (carrier,))
+    conn.commit()
+    conn.close()
+
+
+def list_carrier_credentials():
+    import json
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM carrier_credentials ORDER BY carrier")
+    result = {}
+    for row in cur.fetchall():
+        extra = {}
+        if row["extra"]:
+            try:
+                extra = json.loads(row["extra"])
+            except (ValueError, TypeError):
+                extra = {}
+        result[row["carrier"]] = {"api_key": row["api_key"], "extra": extra}
     conn.close()
     return result
 

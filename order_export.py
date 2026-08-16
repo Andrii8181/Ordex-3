@@ -88,7 +88,13 @@ def generate_order_excel(header, items, output_path):
     merge_set("A9:B9", "Одержувач, ПІБ")
     merge_set("C9:G9", header.get("recipient_name", ""))
 
-    headers_row = 10
+    next_row = 10
+    if header.get("ttn"):
+        merge_set(f"A{next_row}:B{next_row}", "№ ТТН")
+        ttn_cell = merge_set(f"C{next_row}:G{next_row}", header["ttn"], bold=True)
+        next_row += 1
+
+    headers_row = next_row
     col_titles = [
         ("A", "№П/п"), ("B", "Найменування"), ("C", None),
         ("D", "Од.вим"), ("E", "К-сть"), ("F", "Ціна "),
