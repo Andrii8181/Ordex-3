@@ -349,7 +349,7 @@ def discover_sender_refs(api_key):
     sender_ref = sender.get("Ref")
     sender_name = sender.get("Description") or sender.get("CounterpartyName") or ""
 
-    contacts = _np_request(api_key, "ContactPerson", "getCounterpartyContactPersons",
+    contacts = _np_request(api_key, "ContactPersonGeneral", "getCounterpartyContactPersons",
                             {"Ref": sender_ref, "Page": "1"})
     if not contacts:
         raise CarrierAPIError(
@@ -392,7 +392,7 @@ def find_sender_by_phone(api_key, phone):
         sender_ref = sender.get("Ref")
         if not sender_ref:
             continue
-        contacts = _np_request(api_key, "ContactPerson", "getCounterpartyContactPersons",
+        contacts = _np_request(api_key, "ContactPersonGeneral", "getCounterpartyContactPersons",
                                 {"Ref": sender_ref, "Page": "1"})
         for contact in (contacts or []):
             contact_phone = contact.get("Phones") or contact.get("Phone") or ""
