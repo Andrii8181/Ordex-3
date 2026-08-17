@@ -205,14 +205,17 @@ def _create_ttn_nova_poshta(header, items, credentials):
     total_sum = header.get("total_sum") or sum((i.get("sum") or 0) for i in items) or 100
     description = ", ".join(i["name"] for i in items)[:100] or "Товар"
 
+    payer_type_np = "Recipient" if header.get("payer_type") == "recipient" else "Sender"
+    seats_amount = header.get("seats_amount") or 1
+
     props = {
         "NewAddress": "1",
-        "PayerType": "Sender",
+        "PayerType": payer_type_np,
         "PaymentMethod": "Cash",
         "CargoType": "Cargo",
         "Weight": str(round(float(total_weight), 2)),
         "ServiceType": "WarehouseWarehouse",
-        "SeatsAmount": "1",
+        "SeatsAmount": str(int(seats_amount)),
         "Description": description,
         "Cost": str(round(float(total_sum), 2)),
         "CitySender": sender_city_ref,
@@ -226,6 +229,16 @@ def _create_ttn_nova_poshta(header, items, credentials):
         "ContactRecipient": recipient_contact_ref,
         "RecipientsPhone": header["recipient_phone"],
     }
+
+    # -- накладений платіж (готівка, яку перевізник збирає з одержувача
+    # при видачі й повертає відправнику) --
+    cod_amount = header.get("cod_amount")
+    if cod_amount:
+        props["BackwardDeliveryData"] = [{
+            "PayerType": "Recipient",
+            "CargoType": "Money",
+            "RedeliveryString": str(round(float(cod_amount), 2)),
+        }]
 
     data = _np_request(api_key, "InternetDocument", "save", props)
     if not data:

@@ -187,6 +187,9 @@ def init_db():
         _ensure_column(conn, "orders", col, coltype)
     _ensure_column(conn, "orders", "sender_name", "TEXT")
     _ensure_column(conn, "sender_phones", "sender_name", "TEXT")
+    for col, coltype in [("payer_type", "TEXT"), ("seats_amount", "INTEGER"),
+                          ("cod_amount", "REAL")]:
+        _ensure_column(conn, "orders", col, coltype)
 
     _migrate_to_senders_table(conn)
     conn.commit()
@@ -321,6 +324,20 @@ def search_products(prefix, as_of_date=None, limit=15):
     starts = [p for p in catalog if p["name"].lower().startswith(prefix_lower)]
     contains = [p for p in catalog if prefix_lower in p["name"].lower() and p not in starts]
     return (starts + contains)[:limit]
+
+
+def search_products_by_code(prefix, as_of_date=None, limit=15):
+    """
+    Пошук товарів за кодом — потрібен, коли одна й та сама назва товару
+    (наприклад "Виток") має кілька модифікацій з різними кодами й цінами,
+    і користувач хоче знайти чи звірити потрібний код напряму.
+    """
+    catalog = get_active_catalog(as_of_date)
+    prefix_lower = prefix.strip().lower()
+    if not prefix_lower:
+        return catalog[:limit]
+    matches = [p for p in catalog if p.get("code") and prefix_lower in p["code"].lower()]
+    return matches[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -519,8 +536,9 @@ def save_order(header, items, file_name):
                              recipient_phone, carrier, carrier_branch, delivery_type,
                              street, building, apartment, recipient_oblast, recipient_city,
                              recipient_address, recipient_name, total_sum, total_weight,
-                             client_id, file_name, ttn, ttn_status, ttn_error, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             client_id, file_name, ttn, ttn_status, ttn_error,
+                             payer_type, seats_amount, cod_amount, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         header["order_number"], header["order_date"], header["buyer_name"],
         header.get("buyer_address"), header.get("responsible"),
@@ -533,6 +551,7 @@ def save_order(header, items, file_name):
         header.get("total_sum"), header.get("total_weight"),
         header.get("client_id"), file_name,
         header.get("ttn"), header.get("ttn_status"), header.get("ttn_error"),
+        header.get("payer_type"), header.get("seats_amount"), header.get("cod_amount"),
         datetime.now().isoformat(timespec="seconds"),
     ))
     order_id = cur.lastrowid
