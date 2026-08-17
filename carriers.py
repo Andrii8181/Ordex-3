@@ -435,3 +435,53 @@ def _cancel_ttn_nova_poshta(ttn_ref, credentials):
     if not data:
         raise CarrierAPIError("Нова Пошта не підтвердила скасування ТТН.")
     return True
+
+
+PRINT_DOCUMENT_URL = "https://my.novaposhta.ua/orders/printDocument/orders[0]/{ref}/type/pdf/apiKey/{api_key}"
+
+
+def fetch_ttn_pdf(ttn_ref, api_key):
+    """
+    Завантажує друковану форму ТТН (бланк-накладну) у форматі PDF з
+    Нової Пошти. Повертає байти PDF-файлу. Кидає CarrierAPIError, якщо
+    завантажити не вдалось (напр. немає з'єднання чи невірний Ref).
+    """
+    if not REQUESTS_AVAILABLE:
+        raise CarrierAPIError("Модуль мережевих запитів (requests) недоступний у цій збірці.")
+    if not ttn_ref:
+        raise CarrierAPIError("Немає внутрішнього ідентифікатора (Ref) цієї накладної.")
+    if not api_key:
+        raise CarrierAPIError("Не вказано API-ключ Нової Пошти.")
+    url = PRINT_DOCUMENT_URL.format(ref=ttn_ref, api_key=api_key)
+    try:
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        raise CarrierAPIError(f"Не вдалось завантажити бланк ТТН: {e}")
+    content_type = resp.headers.get("Content-Type", "")
+    if "pdf" not in content_type.lower() and not resp.content.startswith(b"%PDF"):
+        raise CarrierAPIError(
+            "Нова Пошта повернула не PDF-файл (можливо, невірний Ref або ключ "
+            "не має прав на друк цієї накладної)."
+        )
+    return resp.content
+
+
+def get_warehouses_for_city(api_key, city_name):
+    """
+    Повертає список відділень заданого міста: [{"number": "5", "description":
+    "Відділення №5: ...", "ref": "..."}] — для автодоповнення номера
+    відділення одержувача прямо з довідника Нової Пошти.
+    Кидає CarrierAPIError, якщо не вдалось (немає ключа, місто не знайдено).
+    """
+    if not REQUESTS_AVAILABLE:
+        raise CarrierAPIError("Модуль мережевих запитів (requests) недоступний у цій збірці.")
+    if not api_key:
+        raise CarrierAPIError("Не вказано API-ключ.")
+    city_ref = _get_city_ref(api_key, city_name)
+    data = _np_request(api_key, "AddressGeneral", "getWarehouses", {"CityRef": city_ref})
+    return [
+        {"number": str(w.get("Number") or ""), "description": w.get("Description") or "",
+         "ref": w.get("Ref")}
+        for w in (data or [])
+    ]

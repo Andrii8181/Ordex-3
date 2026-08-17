@@ -194,6 +194,7 @@ def init_db():
     _ensure_column(conn, "orders", "recipient_type", "TEXT")
     _ensure_column(conn, "orders", "recipient_edrpou", "TEXT")
     _ensure_column(conn, "orders", "sender_warehouse_number", "TEXT")
+    _ensure_column(conn, "orders", "ttn_pdf_path", "TEXT")
 
     _migrate_to_senders_table(conn)
     conn.commit()
@@ -543,8 +544,8 @@ def save_order(header, items, file_name):
                              recipient_address, recipient_name, recipient_type,
                              recipient_edrpou, total_sum, total_weight,
                              client_id, file_name, ttn, ttn_ref, ttn_status, ttn_error,
-                             payer_type, seats_amount, cod_amount, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             ttn_pdf_path, payer_type, seats_amount, cod_amount, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         header["order_number"], header["order_date"], header["buyer_name"],
         header.get("buyer_address"), header.get("responsible"),
@@ -559,6 +560,7 @@ def save_order(header, items, file_name):
         header.get("total_sum"), header.get("total_weight"),
         header.get("client_id"), file_name,
         header.get("ttn"), header.get("ttn_ref"), header.get("ttn_status"), header.get("ttn_error"),
+        header.get("ttn_pdf_path"),
         header.get("payer_type"), header.get("seats_amount"), header.get("cod_amount"),
         datetime.now().isoformat(timespec="seconds"),
     ))
@@ -641,6 +643,26 @@ def get_order(order_id):
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def set_order_ttn_pdf_path(order_id, pdf_path):
+    conn = get_connection()
+    conn.execute("UPDATE orders SET ttn_pdf_path = ? WHERE id = ?", (pdf_path, order_id))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# База клієнтів — перегляд/експорт
+# ---------------------------------------------------------------------------
+
+def list_clients(limit=1000):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM clients ORDER BY full_name LIMIT ?", (limit,))
+    result = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return result
 
 
 # ---------------------------------------------------------------------------

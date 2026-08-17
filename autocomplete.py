@@ -52,6 +52,10 @@ class AutocompleteEntry(tk.Frame):
         self._suppress = False
         self._hide_list()
 
+    def set_state(self, state):
+        """Вмикає/вимикає внутрішнє поле вводу (state='normal'/'disabled')."""
+        self.entry.configure(state=state)
+
     def focus_set_entry(self):
         self.entry.focus_set()
 

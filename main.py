@@ -4,6 +4,7 @@ main.py — головне вікно програми ведення заяво
 Запуск: python3 main.py
 """
 import os
+import subprocess
 import sys
 import json
 import threading
@@ -88,6 +89,7 @@ COLOR_TEXT_MUTED = "#7C8A93"
 SIDEBAR_ITEMS = [
     ("order", "Нова заявка"),
     ("history", "Історія заявок"),
+    ("clients", "Клієнти"),
 ]
 
 REPORT_MENU_ITEMS = [
@@ -135,6 +137,8 @@ class App(tk.Tk):
         self.selected_client = None
         self.current_items = []
         self._selected_product = None
+        self._warehouse_cache = {}
+        self._warehouse_fetch_in_progress = set()
 
         # -- глобальна світла тема: замість переписування кожного віджета
         # окремо, задаємо кольори за замовчуванням через реєстр опцій Tk.
@@ -191,6 +195,7 @@ class App(tk.Tk):
         self.views = {}
         self._build_order_view()
         self._build_history_view()
+        self._build_clients_view()
         for key, _label in REPORT_MENU_ITEMS:
             self._build_report_view(key)
 
@@ -294,6 +299,8 @@ class App(tk.Tk):
             btn.configure(bg=COLOR_SIDEBAR_ACTIVE if k == key else COLOR_SIDEBAR)
         if key == "history":
             self._refresh_history()
+        elif key == "clients":
+            self._refresh_clients()
 
     # ------------------------------------------------------------------
     # Верхня панель: Файл / Налаштування / Звіти
@@ -871,8 +878,10 @@ class App(tk.Tk):
         r2 += 1
 
         tk.Label(right, text="№ відділення:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
-        self.carrier_branch_var = tk.StringVar()
-        self.carrier_branch_entry = tk.Entry(right, textvariable=self.carrier_branch_var, width=32, font=FONT)
+        self.carrier_branch_entry = AutocompleteEntry(
+            right, search_fn=self._search_recipient_warehouses_fn,
+            on_select=self._on_recipient_warehouse_selected, width=32, font=FONT
+        )
         self.carrier_branch_entry.grid(row=r2, column=1, sticky="w")
         r2 += 1
 
@@ -1073,11 +1082,11 @@ class App(tk.Tk):
             rb.configure(state="disabled" if is_pickup else "normal")
 
         if is_pickup:
-            self.carrier_branch_var.set("")
+            self.carrier_branch_entry.set("")
             self.street_var.set("")
             self.building_var.set("")
             self.apartment_var.set("")
-            self.carrier_branch_entry.configure(state="disabled")
+            self.carrier_branch_entry.set_state("disabled")
             self.street_entry.configure(state="disabled")
             self.building_entry.configure(state="disabled")
             self.apartment_entry.configure(state="disabled")
@@ -1085,7 +1094,7 @@ class App(tk.Tk):
 
         delivery_type = self.delivery_type_var.get()
         if delivery_type == "branch":
-            self.carrier_branch_entry.configure(state="normal")
+            self.carrier_branch_entry.set_state("normal")
             self.street_entry.configure(state="disabled")
             self.building_entry.configure(state="disabled")
             self.apartment_entry.configure(state="disabled")
@@ -1093,8 +1102,8 @@ class App(tk.Tk):
             self.building_var.set("")
             self.apartment_var.set("")
         else:
-            self.carrier_branch_entry.configure(state="disabled")
-            self.carrier_branch_var.set("")
+            self.carrier_branch_entry.set_state("disabled")
+            self.carrier_branch_entry.set("")
             self.street_entry.configure(state="normal")
             self.building_entry.configure(state="normal")
             self.apartment_entry.configure(state="normal")
@@ -1179,6 +1188,65 @@ class App(tk.Tk):
         merged = list(dict.fromkeys(static_cities + learned_cities))
         return [(c, c) for c in merged]
 
+    def _search_recipient_warehouses_fn(self, text):
+        """
+        Підказки номерів відділень одержувача — підтягуються напряму з
+        довідника Нової Пошти для обраного міста (кешується по місту, щоб
+        не бити API-запитами на кожну натиснуту клавішу). Якщо API
+        недоступне (немає ключа/мережі) — поле лишається звичайним
+        текстовим і номер можна ввести вручну, підказки просто не з'являться.
+        """
+        if self.carrier_var.get() != "Нова Пошта":
+            return []
+        city = self.city_entry.get().strip()
+        if not city:
+            return []
+        cache_key = city.lower()
+        if cache_key not in self._warehouse_cache:
+            self._start_warehouse_fetch(city)
+            return []
+        warehouses = self._warehouse_cache[cache_key]
+        prefix = text.strip().lower()
+        if prefix:
+            warehouses = [w for w in warehouses
+                          if prefix in w["number"].lower() or prefix in w["description"].lower()]
+        return [(f"№{w['number']} — {w['description']}", w["number"]) for w in warehouses[:15]]
+
+    def _on_recipient_warehouse_selected(self, label, number):
+        self.carrier_branch_entry.set(str(number))
+
+    def _get_np_api_key_for_current_sender(self):
+        sender = db.get_sender(self.payment_var.get().strip())
+        if sender and sender.get("carrier") == "Нова Пошта" and sender.get("api_key"):
+            return sender["api_key"]
+        return None
+
+    def _start_warehouse_fetch(self, city):
+        cache_key = city.lower()
+        if cache_key in self._warehouse_fetch_in_progress:
+            return
+        api_key = self._get_np_api_key_for_current_sender()
+        if not api_key:
+            return  # без ключа підказки просто недоступні — поле лишається ручним
+        self._warehouse_fetch_in_progress.add(cache_key)
+
+        def worker():
+            try:
+                result = carriers.get_warehouses_for_city(api_key, city)
+            except carriers.CarrierAPIError:
+                result = []
+            self.after(0, lambda: self._apply_warehouse_fetch_result(cache_key, result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_warehouse_fetch_result(self, cache_key, result):
+        self._warehouse_cache[cache_key] = result
+        self._warehouse_fetch_in_progress.discard(cache_key)
+        # якщо користувач усе ще друкує в полі відділення — одразу
+        # перепоказати підказки, тепер уже з довантаженими даними
+        if self.focus_get() == self.carrier_branch_entry.entry:
+            self.carrier_branch_entry._on_text_changed()
+
     def _search_products_fn(self, text):
         products = db.search_products(text)
         return [(f"{p['name']} ({p['code']})" if p["code"] else p["name"], p) for p in products]
@@ -1204,7 +1272,7 @@ class App(tk.Tk):
         if client.get("carrier"):
             self.carrier_var.set(client["carrier"])
         if client.get("carrier_branch"):
-            self.carrier_branch_var.set(client["carrier_branch"])
+            self.carrier_branch_entry.set(client["carrier_branch"] or "")
         if client.get("delivery_type"):
             self.delivery_type_var.set(client["delivery_type"])
         self.street_var.set(client.get("street") or "")
@@ -1328,7 +1396,7 @@ class App(tk.Tk):
             city=city or None,
             address=recipient_address or None,
             carrier=carrier or None,
-            carrier_branch=self.carrier_branch_var.get().strip() or None,
+            carrier_branch=self.carrier_branch_entry.get().strip() or None,
             delivery_type=delivery_type or None,
             street=self.street_var.get().strip() or None,
             building=self.building_var.get().strip() or None,
@@ -1362,7 +1430,7 @@ class App(tk.Tk):
             "sender_name": self.sender_name_var.get().strip(),
             "recipient_phone": self.recipient_phone_entry.get().strip(),
             "carrier": carrier,
-            "carrier_branch": self.carrier_branch_var.get().strip() if delivery_type == "branch" else "",
+            "carrier_branch": self.carrier_branch_entry.get().strip() if delivery_type == "branch" else "",
             "delivery_type": delivery_type,
             "street": self.street_var.get().strip(),
             "building": self.building_var.get().strip(),
@@ -1388,11 +1456,15 @@ class App(tk.Tk):
             row["seq_no"] = i
             items_for_export.append(row)
 
+        filename = order_export.build_filename(buyer_name, order_date, header["order_number"])
+        output_path = os.path.join(OUTPUT_DIR, filename)
+
         # -- автоматичне створення ТТН (якщо увімкнено і перевізник підтримується) --
         header["ttn"] = None
         header["ttn_ref"] = None
         header["ttn_status"] = None
         header["ttn_error"] = None
+        header["ttn_pdf_path"] = None
         if self.auto_ttn_var.get() and carrier != "Самовивіз":
             sender = db.get_sender(self.payment_var.get().strip())
             if sender and sender.get("carrier") == carrier:
@@ -1421,6 +1493,19 @@ class App(tk.Tk):
                 header["ttn"] = result["ttn"]
                 header["ttn_ref"] = result.get("ref")
                 header["ttn_status"] = "created"
+
+                # -- одразу пробуємо завантажити друкований бланк ТТН; якщо
+                # не вийде — не критично, заявка все одно збережеться, а
+                # бланк можна буде довантажити пізніше з "Історії заявок" --
+                try:
+                    pdf_bytes = carriers.fetch_ttn_pdf(header["ttn_ref"], credentials["api_key"])
+                    pdf_name = filename.rsplit(".", 1)[0] + "_ттн.pdf"
+                    pdf_path = os.path.join(OUTPUT_DIR, pdf_name)
+                    with open(pdf_path, "wb") as f:
+                        f.write(pdf_bytes)
+                    header["ttn_pdf_path"] = pdf_path
+                except carriers.CarrierAPIError:
+                    pass  # бланк можна довантажити пізніше вручну з історії
             except carriers.CarrierAPIError as e:
                 header["ttn_status"] = "failed"
                 header["ttn_error"] = str(e)
@@ -1433,8 +1518,6 @@ class App(tk.Tk):
             finally:
                 self.config(cursor="")
 
-        filename = order_export.build_filename(buyer_name, order_date, header["order_number"])
-        output_path = os.path.join(OUTPUT_DIR, filename)
         order_export.generate_order_excel(header, items_for_export, output_path)
 
         db.save_order(header, self.current_items, filename)
@@ -1455,7 +1538,7 @@ class App(tk.Tk):
         self.recipient_phone_entry.set("")
         self.carrier_var.set(CARRIERS[0])
         self.delivery_type_var.set("branch")
-        self.carrier_branch_var.set("")
+        self.carrier_branch_entry.set("")
         self.street_var.set("")
         self.building_var.set("")
         self.apartment_var.set("")
@@ -1632,14 +1715,17 @@ class App(tk.Tk):
         self.history_tree.tag_configure("no_ttn", background=COLOR_CARD)
 
         self.history_tree.pack(fill="both", expand=True, padx=14, pady=10)
+        self.history_tree.bind("<Double-1>", lambda e: self._open_order_details_from_selection())
 
         btn_row = tk.Frame(parent)
         btn_row.pack(fill="x", padx=14, pady=4)
         tk.Button(btn_row, text="Оновити список", font=FONT,
                   command=self._refresh_history).pack(side="left")
+        tk.Button(btn_row, text="Переглянути деталі", font=FONT,
+                  command=self._open_order_details_from_selection).pack(side="left", padx=8)
         tk.Button(btn_row, text="Скасувати ТТН", font=FONT, bg="#FBE1E1", fg=COLOR_TEXT,
                   relief="flat", padx=10, pady=4, cursor="hand2",
-                  command=self._cancel_selected_ttn).pack(side="left", padx=8)
+                  command=self._cancel_selected_ttn).pack(side="left")
 
     def _refresh_history(self):
         self.history_tree.delete(*self.history_tree.get_children())
@@ -1672,7 +1758,9 @@ class App(tk.Tk):
         if not sel:
             messagebox.showwarning("Увага", "Виберіть заявку в списку.")
             return
-        order_id = int(sel[0])
+        self._cancel_ttn_for_order(int(sel[0]))
+
+    def _cancel_ttn_for_order(self, order_id, refresh_dialog_callback=None):
         order = db.get_order(order_id)
         if not order:
             return
@@ -1714,6 +1802,245 @@ class App(tk.Tk):
         finally:
             self.config(cursor="")
             self._refresh_history()
+            if refresh_dialog_callback:
+                refresh_dialog_callback()
+
+    @staticmethod
+    def _open_file_externally(path):
+        """Відкриває файл програмою за замовчуванням у Windows/macOS/Linux."""
+        try:
+            if sys.platform == "win32":
+                os.startfile(path)  # noqa
+            elif sys.platform == "darwin":
+                subprocess.run(["open", path], check=False)
+            else:
+                subprocess.run(["xdg-open", path], check=False)
+            return True
+        except Exception as e:
+            messagebox.showerror("Не вдалось відкрити файл", str(e))
+            return False
+
+    def _open_order_details_from_selection(self):
+        sel = self.history_tree.selection()
+        if not sel:
+            messagebox.showwarning("Увага", "Виберіть заявку в списку.")
+            return
+        self._open_order_details(int(sel[0]))
+
+    def _open_order_details(self, order_id):
+        order = db.get_order(order_id)
+        if not order:
+            return
+        items = db.get_order_items(order_id)
+
+        win = tk.Toplevel(self)
+        win.title(f"Заявка № {order['order_number']}")
+        win.configure(bg=COLOR_BG)
+        win.transient(self)
+
+        wrap = tk.Frame(win, bg=COLOR_BG, padx=16, pady=16)
+        wrap.pack(fill="both", expand=True)
+
+        tk.Label(wrap, text=f"Заявка № {order['order_number']} від "
+                             f"{(order['order_date'] or '')[:10]}",
+                 font=FONT_BOLD, bg=COLOR_BG, fg=COLOR_TEXT).pack(anchor="w", pady=(0, 10))
+
+        info_frame = tk.Frame(wrap, bg=COLOR_BG)
+        info_frame.pack(fill="x")
+
+        left_info = tk.Frame(info_frame, bg=COLOR_BG)
+        left_info.pack(side="left", fill="both", expand=True, anchor="n")
+        right_info = tk.Frame(info_frame, bg=COLOR_BG)
+        right_info.pack(side="left", fill="both", expand=True, padx=(24, 0), anchor="n")
+
+        def add_row(parent_frame, row_idx, label, value):
+            tk.Label(parent_frame, text=label, font=FONT_SMALL, bg=COLOR_BG,
+                     fg=COLOR_TEXT_MUTED).grid(row=row_idx, column=0, sticky="w", pady=2)
+            tk.Label(parent_frame, text=value or "—", font=FONT, bg=COLOR_BG,
+                     fg=COLOR_TEXT, wraplength=280, justify="left").grid(
+                row=row_idx, column=1, sticky="w", padx=(8, 0), pady=2)
+
+        add_row(left_info, 0, "Відповідальний:", order.get("responsible"))
+        add_row(left_info, 1, "Спосіб оплати:", order.get("payment_method"))
+        add_row(left_info, 2, "Телефон відправника:", order.get("sender_phone"))
+        add_row(left_info, 3, "Ім'я відправника:", order.get("sender_name"))
+        add_row(left_info, 4, "Відділення відправника:", order.get("sender_warehouse_number"))
+        add_row(left_info, 5, "Покупець:", order.get("buyer_name"))
+
+        recipient_type_display = "Юридична особа" if order.get("recipient_type") == "legal" else "Фізична особа"
+        add_row(right_info, 0, "Одержувач:", order.get("recipient_name"))
+        add_row(right_info, 1, "Тип одержувача:", recipient_type_display)
+        if order.get("recipient_type") == "legal":
+            add_row(right_info, 2, "ЄДРПОУ:", order.get("recipient_edrpou"))
+        add_row(right_info, 3, "Телефон одержувача:", order.get("recipient_phone"))
+        add_row(right_info, 4, "Перевізник:", order.get("carrier"))
+        addr_bits = [order.get("recipient_oblast"), order.get("recipient_city")]
+        if order.get("delivery_type") == "branch":
+            addr_bits.append(f"відділення №{order.get('carrier_branch')}" if order.get("carrier_branch") else None)
+        else:
+            addr_bits.append(order.get("street"))
+        add_row(right_info, 5, "Адреса:", ", ".join(b for b in addr_bits if b))
+
+        # -- товари --
+        tk.Label(wrap, text="Товари", font=FONT_BOLD, bg=COLOR_BG, fg=COLOR_TEXT).pack(
+            anchor="w", pady=(14, 4))
+        cols = ("code", "name", "unit", "qty", "price", "sum")
+        headers = ["Код", "Найменування", "Од.вим", "К-сть", "Ціна", "Сума"]
+        items_tree = ttk.Treeview(wrap, columns=cols, show="headings", height=min(8, max(3, len(items))))
+        for c, h in zip(cols, headers):
+            items_tree.heading(c, text=h)
+            items_tree.column(c, width=100, anchor="center")
+        items_tree.column("name", width=220, anchor="w")
+        for it in items:
+            items_tree.insert("", "end", values=(
+                it.get("code"), it.get("name"), it.get("unit"), it.get("qty"),
+                it.get("price"), it.get("sum")
+            ))
+        items_tree.pack(fill="x")
+
+        totals_text = f"Разом: {order.get('total_sum') or 0:.2f} грн, {order.get('total_weight') or 0:.2f} кг"
+        tk.Label(wrap, text=totals_text, font=FONT_BOLD, bg=COLOR_BG, fg=COLOR_TEXT).pack(
+            anchor="e", pady=(4, 0))
+
+        # -- ТТН --
+        ttn_frame = tk.LabelFrame(wrap, text="ТТН", font=FONT_SMALL, bg=COLOR_BG,
+                                   fg=COLOR_TEXT_MUTED, padx=12, pady=10)
+        ttn_frame.pack(fill="x", pady=(14, 0))
+
+        if order.get("ttn"):
+            ttn_status_text = {
+                "created": "створено",
+                "cancelled": "скасовано",
+                "failed": "не вдалось створити",
+            }.get(order.get("ttn_status"), order.get("ttn_status") or "")
+            tk.Label(ttn_frame, text=f"№ {order['ttn']} ({ttn_status_text})",
+                     font=FONT_BOLD, bg=COLOR_BG, fg=COLOR_ACCENT_DARK).pack(anchor="w")
+            if order.get("tracking_status"):
+                tk.Label(ttn_frame, text=f"Статус доставки: {order['tracking_status']}",
+                         font=FONT_SMALL, bg=COLOR_BG, fg=COLOR_TEXT_MUTED).pack(anchor="w", pady=(2, 0))
+
+            btns = tk.Frame(ttn_frame, bg=COLOR_BG)
+            btns.pack(anchor="w", pady=(8, 0))
+
+            def download_pdf():
+                pdf_path = order.get("ttn_pdf_path")
+                if pdf_path and os.path.exists(pdf_path):
+                    self._open_file_externally(pdf_path)
+                    return
+                sender = db.get_sender(order.get("payment_method") or "")
+                if not sender or sender.get("carrier") != order.get("carrier") or not sender.get("api_key"):
+                    messagebox.showerror("Не вдалось", "Немає доступного API-ключа для цього "
+                                          "відправника, щоб довантажити бланк.")
+                    return
+                self.config(cursor="watch")
+                self.update_idletasks()
+                try:
+                    pdf_bytes = carriers.fetch_ttn_pdf(order.get("ttn_ref"), sender["api_key"])
+                    pdf_name = order["file_name"].rsplit(".", 1)[0] + "_ттн.pdf"
+                    new_path = os.path.join(OUTPUT_DIR, pdf_name)
+                    with open(new_path, "wb") as f:
+                        f.write(pdf_bytes)
+                    db.set_order_ttn_pdf_path(order_id, new_path)
+                    order["ttn_pdf_path"] = new_path
+                    self._open_file_externally(new_path)
+                except carriers.CarrierAPIError as e:
+                    messagebox.showerror("Не вдалось завантажити бланк", str(e))
+                finally:
+                    self.config(cursor="")
+
+            tk.Button(btns, text="Відкрити бланк ТТН (PDF)", font=FONT_SMALL,
+                      bg=COLOR_ACCENT, fg="white", relief="flat", padx=10, pady=4,
+                      cursor="hand2", command=download_pdf).pack(side="left")
+
+            if order.get("ttn_status") != "cancelled":
+                def cancel_and_refresh():
+                    self._cancel_ttn_for_order(order_id, refresh_dialog_callback=lambda: win.destroy())
+                tk.Button(btns, text="Скасувати ТТН", font=FONT_SMALL, bg="#FBE1E1", fg=COLOR_TEXT,
+                          relief="flat", padx=10, pady=4, cursor="hand2",
+                          command=cancel_and_refresh).pack(side="left", padx=8)
+        else:
+            reason = order.get("ttn_error") or "ТТН не створювався для цієї заявки."
+            tk.Label(ttn_frame, text=reason, font=FONT_SMALL, bg=COLOR_BG,
+                     fg=COLOR_TEXT_MUTED, wraplength=500, justify="left").pack(anchor="w")
+
+        # -- файл заявки --
+        file_btns = tk.Frame(wrap, bg=COLOR_BG)
+        file_btns.pack(fill="x", pady=(14, 0))
+        order_file_path = os.path.join(OUTPUT_DIR, order["file_name"])
+        tk.Button(file_btns, text="Відкрити файл заявки (Excel)", font=FONT_SMALL,
+                  bg="#ECEFF1", fg=COLOR_TEXT, relief="flat", padx=10, pady=4,
+                  cursor="hand2",
+                  command=lambda: self._open_file_externally(order_file_path)
+                  if os.path.exists(order_file_path) else
+                  messagebox.showerror("Не знайдено", "Файл заявки не знайдено на диску.")
+                  ).pack(side="left")
+
+        win.update_idletasks()
+        req_w = max(win.winfo_reqwidth(), 620)
+        req_h = win.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - req_w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - req_h) // 2
+        win.geometry(f"{req_w}x{req_h}+{max(x, 0)}+{max(y, 0)}")
+
+    # ------------------------------------------------------------------
+    # "Клієнти"
+    # ------------------------------------------------------------------
+    def _build_clients_view(self):
+        parent = tk.Frame(self.content)
+        self.views["clients"] = parent
+
+        header_row = tk.Frame(parent)
+        header_row.pack(fill="x", padx=14, pady=(14, 6))
+        tk.Label(header_row, text="База клієнтів", font=FONT_TITLE).pack(side="left")
+        tk.Button(header_row, text="Експортувати в Excel", font=FONT, bg=COLOR_ACCENT,
+                  fg="white", activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                  relief="flat", padx=10, pady=4, cursor="hand2",
+                  command=self._export_clients).pack(side="right")
+        tk.Button(header_row, text="Оновити", font=FONT,
+                  command=self._refresh_clients).pack(side="right", padx=8)
+
+        cols = ("name", "phone", "oblast", "city", "address", "carrier", "branch")
+        headers = ["ПІБ", "Телефон", "Область", "Місто", "Адреса", "Перевізник", "Відділення"]
+        self.clients_tree = ttk.Treeview(parent, columns=cols, show="headings")
+        for c, h in zip(cols, headers):
+            self.clients_tree.heading(c, text=h)
+            self.clients_tree.column(c, width=120, anchor="center")
+        self.clients_tree.column("name", width=200, anchor="w")
+        self.clients_tree.column("address", width=200, anchor="w")
+        self.clients_tree.pack(fill="both", expand=True, padx=14, pady=10)
+
+        self._clients_count_label = tk.Label(parent, text="", font=FONT_SMALL, fg=COLOR_TEXT_MUTED)
+        self._clients_count_label.pack(anchor="w", padx=14, pady=(0, 10))
+
+    def _refresh_clients(self):
+        self.clients_tree.delete(*self.clients_tree.get_children())
+        clients = db.list_clients()
+        for c in clients:
+            self.clients_tree.insert("", "end", values=(
+                c.get("full_name") or "", c.get("phone") or "", c.get("oblast") or "",
+                c.get("city") or "", c.get("address") or "", c.get("carrier") or "",
+                c.get("carrier_branch") or ""
+            ))
+        self._clients_count_label.configure(text=f"Усього клієнтів: {len(clients)}")
+
+    def _export_clients(self):
+        clients = db.list_clients()
+        if not clients:
+            messagebox.showinfo("Немає даних", "База клієнтів поки порожня.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Зберегти базу клієнтів", defaultextension=".xlsx",
+            initialfile="клієнти.xlsx",
+            filetypes=[("Excel files", "*.xlsx")]
+        )
+        if not path:
+            return
+        headers = ["ПІБ", "Телефон", "Область", "Місто", "Адреса", "Перевізник", "Відділення"]
+        rows = [(c.get("full_name") or "", c.get("phone") or "", c.get("oblast") or "",
+                 c.get("city") or "", c.get("address") or "", c.get("carrier") or "",
+                 c.get("carrier_branch") or "") for c in clients]
+        reports.export_table_to_excel(headers, rows, "База клієнтів", path)
+        messagebox.showinfo("Готово", f"Базу клієнтів збережено:\n{path}")
 
     # ------------------------------------------------------------------
     # "Звіти та аналітика"
