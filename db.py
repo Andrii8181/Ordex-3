@@ -190,6 +190,10 @@ def init_db():
     for col, coltype in [("payer_type", "TEXT"), ("seats_amount", "INTEGER"),
                           ("cod_amount", "REAL")]:
         _ensure_column(conn, "orders", col, coltype)
+    _ensure_column(conn, "orders", "ttn_ref", "TEXT")
+    _ensure_column(conn, "orders", "recipient_type", "TEXT")
+    _ensure_column(conn, "orders", "recipient_edrpou", "TEXT")
+    _ensure_column(conn, "orders", "sender_warehouse_number", "TEXT")
 
     _migrate_to_senders_table(conn)
     conn.commit()
@@ -533,24 +537,28 @@ def save_order(header, items, file_name):
     cur.execute("""
         INSERT INTO orders (order_number, order_date, buyer_name, buyer_address,
                              responsible, payment_method, sender_phone, sender_name,
-                             recipient_phone, carrier, carrier_branch, delivery_type,
+                             sender_warehouse_number, recipient_phone, carrier,
+                             carrier_branch, delivery_type,
                              street, building, apartment, recipient_oblast, recipient_city,
-                             recipient_address, recipient_name, total_sum, total_weight,
-                             client_id, file_name, ttn, ttn_status, ttn_error,
+                             recipient_address, recipient_name, recipient_type,
+                             recipient_edrpou, total_sum, total_weight,
+                             client_id, file_name, ttn, ttn_ref, ttn_status, ttn_error,
                              payer_type, seats_amount, cod_amount, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         header["order_number"], header["order_date"], header["buyer_name"],
         header.get("buyer_address"), header.get("responsible"),
         header.get("payment_method"), header.get("sender_phone"), header.get("sender_name"),
+        header.get("sender_warehouse_number"),
         header.get("recipient_phone"), header.get("carrier"),
         header.get("carrier_branch"), header.get("delivery_type"),
         header.get("street"), header.get("building"), header.get("apartment"),
         header.get("recipient_oblast"), header.get("recipient_city"),
         header.get("recipient_address"), header.get("recipient_name"),
+        header.get("recipient_type"), header.get("recipient_edrpou"),
         header.get("total_sum"), header.get("total_weight"),
         header.get("client_id"), file_name,
-        header.get("ttn"), header.get("ttn_status"), header.get("ttn_error"),
+        header.get("ttn"), header.get("ttn_ref"), header.get("ttn_status"), header.get("ttn_error"),
         header.get("payer_type"), header.get("seats_amount"), header.get("cod_amount"),
         datetime.now().isoformat(timespec="seconds"),
     ))
@@ -582,13 +590,15 @@ def list_orders(limit=200):
 # ---------------------------------------------------------------------------
 
 def list_active_ttn_orders():
-    """Заявки з ТТН, які ще не позначені як доставлені — саме їх опитуємо."""
+    """Заявки з ТТН, які ще не позначені як доставлені й не скасовані —
+    саме їх опитуємо."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
         SELECT * FROM orders
         WHERE ttn IS NOT NULL AND ttn != ''
           AND (tracking_delivered IS NULL OR tracking_delivered = 0)
+          AND (ttn_status IS NULL OR ttn_status != 'cancelled')
         ORDER BY id DESC
     """)
     result = [dict(row) for row in cur.fetchall()]
@@ -606,6 +616,31 @@ def update_order_tracking(order_id, status_text, status_raw_json, delivered):
           1 if delivered else 0, order_id))
     conn.commit()
     conn.close()
+
+
+def mark_order_ttn_cancelled(order_id):
+    """Позначає ТТН заявки як скасований. Номер ТТН лишається в записі
+    для історії — просто більше не відстежується і видно, що його
+    скасовано."""
+    conn = get_connection()
+    conn.execute("""
+        UPDATE orders SET ttn_status = 'cancelled',
+                           tracking_status = 'ТТН скасовано',
+                           tracking_delivered = 1,
+                           tracking_updated_at = ?
+        WHERE id = ?
+    """, (datetime.now().isoformat(timespec="seconds"), order_id))
+    conn.commit()
+    conn.close()
+
+
+def get_order(order_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 # ---------------------------------------------------------------------------

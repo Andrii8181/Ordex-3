@@ -121,20 +121,32 @@ def _split_full_name(full_name):
     return last_name, first_name, middle_name
 
 
-def _get_or_create_recipient(api_key, recipient_name, recipient_phone, city_ref):
+def _get_or_create_recipient(api_key, recipient_name, recipient_phone, city_ref,
+                              recipient_type="individual", edrpou=None):
     """
-    Створює (або повторно використовує, якщо вже існує) одержувача-приватну
-    особу в системі Нової Пошти й повертає (ref_контрагента, ref_контактної_особи).
+    Створює (або повторно використовує, якщо вже існує) одержувача в
+    системі Нової Пошти й повертає (ref_контрагента, ref_контактної_особи).
+    recipient_type: "individual" (фізична особа) або "legal" (юридична особа).
     """
-    last_name, first_name, middle_name = _split_full_name(recipient_name)
-    props = {
-        "FirstName": first_name,
-        "LastName": last_name,
-        "MiddleName": middle_name,
-        "Phone": recipient_phone,
-        "CounterpartyType": "PrivatePerson",
-        "CounterpartyProperty": "Recipient",
-    }
+    if recipient_type == "legal":
+        if not edrpou:
+            raise CarrierAPIError("Для одержувача-юридичної особи потрібен код ЄДРПОУ.")
+        props = {
+            "CounterpartyProperty": "Recipient",
+            "CounterpartyType": "Organization",
+            "EDRPOU": edrpou,
+            "CounterpartyName": recipient_name or "Юридична особа",
+        }
+    else:
+        last_name, first_name, middle_name = _split_full_name(recipient_name)
+        props = {
+            "FirstName": first_name,
+            "LastName": last_name,
+            "MiddleName": middle_name,
+            "Phone": recipient_phone,
+            "CounterpartyType": "PrivatePerson",
+            "CounterpartyProperty": "Recipient",
+        }
     data = _np_request(api_key, "Counterparty", "save", props)
     if not data:
         raise CarrierAPIError("Не вдалось створити/знайти одержувача в системі Нової Пошти.")
@@ -143,6 +155,23 @@ def _get_or_create_recipient(api_key, recipient_name, recipient_phone, city_ref)
     contact_data = (data[0].get("ContactPerson") or {}).get("data") or []
     if contact_data:
         contact_ref = contact_data[0].get("Ref")
+
+    if not contact_ref and recipient_type == "legal":
+        # для юридичної особи контактну особу треба створити окремим
+        # викликом (ContactPerson/save), система не завжди повертає її
+        # одразу у відповіді Counterparty/save, як для фізичної особи
+        last_name, first_name, middle_name = _split_full_name(recipient_name)
+        contact_props = {
+            "CounterpartyRef": counterparty_ref,
+            "FirstName": first_name,
+            "LastName": last_name,
+            "MiddleName": middle_name,
+            "Phone": recipient_phone,
+        }
+        contact_data2 = _np_request(api_key, "ContactPerson", "save", contact_props)
+        if contact_data2:
+            contact_ref = contact_data2[0].get("Ref")
+
     if not contact_ref:
         raise CarrierAPIError("Нова Пошта не повернула контактну особу одержувача.")
     return counterparty_ref, contact_ref
@@ -187,6 +216,8 @@ def _create_ttn_nova_poshta(header, items, credentials):
         raise CarrierAPIError("Не вказано місто одержувача.")
     if not header.get("recipient_phone"):
         raise CarrierAPIError("Не вказано телефон одержувача.")
+    if header.get("recipient_type") == "legal" and not header.get("recipient_edrpou"):
+        raise CarrierAPIError("Для одержувача-юридичної особи вкажіть код ЄДРПОУ.")
 
     sender_city_ref = _get_city_ref(api_key, sender_city_name)
     sender_warehouse_ref = _get_warehouse_ref(api_key, sender_city_ref, sender_warehouse_number)
@@ -199,6 +230,8 @@ def _create_ttn_nova_poshta(header, items, credentials):
         header.get("recipient_name") or header.get("buyer_name"),
         header["recipient_phone"],
         recipient_city_ref,
+        recipient_type=header.get("recipient_type") or "individual",
+        edrpou=header.get("recipient_edrpou"),
     )
 
     total_weight = header.get("total_weight") or sum((i.get("weight_total") or 0) for i in items) or 1
@@ -326,3 +359,79 @@ def discover_sender_refs(api_key):
     contact_ref = contacts[0].get("Ref")
 
     return {"sender_ref": sender_ref, "contact_ref": contact_ref, "name": sender_name}
+
+
+def _normalize_phone(phone):
+    return "".join(ch for ch in (phone or "") if ch.isdigit())
+
+
+def find_sender_by_phone(api_key, phone):
+    """
+    Шукає серед відправників, зареєстрованих на акаунті цього API-ключа,
+    того, чий телефон збігається з введеним (звіряються тільки цифри,
+    формат не важливий). Повертає {"sender_ref", "contact_ref", "name",
+    "city"} або None, якщо збігів не знайдено.
+
+    Використовується для полегшення заповнення профілю відправника: після
+    введення номера телефону програма намагається підтягнути решту даних
+    сама. Публічне API Нової Пошти не має прямого пошуку "за телефоном",
+    тому тут перебираються зареєстровані на акаунті відправники (їх
+    зазвичай небагато) і звіряється номер їхньої контактної особи.
+    """
+    if not REQUESTS_AVAILABLE:
+        raise CarrierAPIError("Модуль мережевих запитів (requests) недоступний у цій збірці.")
+    if not api_key:
+        raise CarrierAPIError("Спочатку вкажіть API-ключ.")
+    digits = _normalize_phone(phone)
+    if not digits:
+        return None
+
+    senders = _np_request(api_key, "Counterparty", "getCounterparties",
+                           {"CounterpartyProperty": "Sender", "Page": "1"})
+    for sender in (senders or [])[:50]:
+        sender_ref = sender.get("Ref")
+        if not sender_ref:
+            continue
+        contacts = _np_request(api_key, "ContactPerson", "getCounterpartyContactPersons",
+                                {"Ref": sender_ref, "Page": "1"})
+        for contact in (contacts or []):
+            contact_phone = contact.get("Phones") or contact.get("Phone") or ""
+            if digits and digits in _normalize_phone(contact_phone):
+                return {
+                    "sender_ref": sender_ref,
+                    "contact_ref": contact.get("Ref"),
+                    "name": sender.get("Description") or sender.get("CounterpartyName") or "",
+                    "city": (sender.get("City") or {}).get("Description")
+                            if isinstance(sender.get("City"), dict) else None,
+                }
+    return None
+
+
+def cancel_ttn(carrier, ttn_ref, credentials):
+    """
+    Скасовує вже створену ТТН (наприклад, створено помилково, або клієнт
+    зрештою забрав товар самовивозом). Працює, лише поки відправлення не
+    передане перевізнику фізично — якщо посилка вже в дорозі, сервер
+    поверне помилку, яка показується користувачу як є.
+    """
+    if carrier == "Нова Пошта":
+        if not REQUESTS_AVAILABLE:
+            raise CarrierAPIError("Модуль мережевих запитів (requests) недоступний у цій збірці.")
+        return _cancel_ttn_nova_poshta(ttn_ref, credentials)
+    raise CarrierAPIError(f"Скасування ТТН для «{carrier}» ще не підключено.")
+
+
+def _cancel_ttn_nova_poshta(ttn_ref, credentials):
+    if not credentials or not credentials.get("api_key"):
+        raise CarrierAPIError("Не вказано API-ключ Нової Пошти.")
+    if not ttn_ref:
+        raise CarrierAPIError(
+            "Немає внутрішнього ідентифікатора (Ref) цієї накладної — схоже, "
+            "вона була створена до оновлення програми. Скасуйте її вручну на "
+            "сайті чи в кабінеті Нової Пошти."
+        )
+    api_key = credentials["api_key"]
+    data = _np_request(api_key, "InternetDocument", "delete", {"DocumentRefs": [ttn_ref]})
+    if not data:
+        raise CarrierAPIError("Нова Пошта не підтвердила скасування ТТН.")
+    return True
