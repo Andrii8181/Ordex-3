@@ -133,6 +133,7 @@ class App(tk.Tk):
         style.configure("TNotebook.Tab", font=FONT)
 
         db.init_db()
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
 
         self.selected_client = None
         self.current_items = []
@@ -1519,22 +1520,30 @@ class App(tk.Tk):
 
                 # -- одразу пробуємо завантажити друкований бланк ТТН; якщо
                 # не вийде — не критично, заявка все одно збережеться, а
-                # бланк можна буде довантажити пізніше з "Історії заявок" --
+                # бланк можна буде довантажити пізніше з "Історії заявок".
+                # Тут навмисно ловимо БУДЬ-яку помилку (не лише CarrierAPIError) —
+                # збереження самої заявки не повинно залежати від того, чи
+                # вдалось довантажити PDF-бланк. --
                 try:
                     pdf_bytes = carriers.fetch_ttn_pdf(header["ttn_ref"], credentials["api_key"])
                     pdf_name = filename.rsplit(".", 1)[0] + "_ттн.pdf"
                     pdf_path = os.path.join(OUTPUT_DIR, pdf_name)
+                    os.makedirs(OUTPUT_DIR, exist_ok=True)
                     with open(pdf_path, "wb") as f:
                         f.write(pdf_bytes)
                     header["ttn_pdf_path"] = pdf_path
-                except carriers.CarrierAPIError:
+                except Exception:
                     pass  # бланк можна довантажити пізніше вручну з історії
-            except carriers.CarrierAPIError as e:
+            except Exception as e:
                 header["ttn_status"] = "failed"
                 header["ttn_error"] = str(e)
+                if isinstance(e, carriers.CarrierAPIError):
+                    reason_text = str(e)
+                else:
+                    reason_text = f"Технічна помилка в програмі: {e}"
                 messagebox.showwarning(
                     "ТТН не створено",
-                    f"Заявку буде сформовано без ТТН. Причина:\n\n{e}\n\n"
+                    f"Заявку буде сформовано без ТТН. Причина:\n\n{reason_text}\n\n"
                     f"Ви можете створити ТТН вручну на сайті перевізника і "
                     f"пізніше повернутись до цього."
                 )

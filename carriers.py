@@ -236,7 +236,9 @@ def _create_ttn_nova_poshta(header, items, credentials):
 
     total_weight = header.get("total_weight") or sum((i.get("weight_total") or 0) for i in items) or 1
     total_sum = header.get("total_sum") or sum((i.get("sum") or 0) for i in items) or 100
-    description = ", ".join(i["name"] for i in items)[:100] or "Товар"
+    # Нова Пошта вимагає опис вантажу — за домовленістю тут завжди
+    # "Запчастини", незалежно від конкретних товарів у заявці
+    description = "Запчастини"
 
     payer_type_np = "Recipient" if header.get("payer_type") == "recipient" else "Sender"
     seats_amount = header.get("seats_amount") or 1
