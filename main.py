@@ -550,25 +550,36 @@ class App(tk.Tk):
         tk.Label(np_frame, text="API-ключ:", bg=COLOR_BG, font=FONT).grid(
             row=0, column=0, sticky="w", pady=3)
         api_key_var = tk.StringVar()
-        api_key_entry = tk.Entry(np_frame, textvariable=api_key_var, width=22, font=FONT, show="•")
+        api_key_entry = tk.Entry(np_frame, textvariable=api_key_var, width=45, font=FONT, show="•")
         api_key_entry.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
+
+        def paste_api_key():
+            try:
+                clip = self.clipboard_get()
+            except tk.TclError:
+                return
+            api_key_var.set(clip.strip())
+
+        tk.Button(np_frame, text="Вставити", font=FONT_SMALL, bg="#ECEFF1", fg=COLOR_TEXT,
+                  relief="flat", padx=8, pady=2, cursor="hand2",
+                  command=paste_api_key).grid(row=0, column=2, sticky="w", padx=(6, 0))
         show_key_var = tk.BooleanVar(value=False)
         tk.Checkbutton(np_frame, text="показати", variable=show_key_var, bg=COLOR_BG,
                         font=FONT_SMALL,
                         command=lambda: api_key_entry.configure(
                             show="" if show_key_var.get() else "•")
-                        ).grid(row=0, column=2, sticky="w", padx=(6, 0))
+                        ).grid(row=0, column=3, sticky="w", padx=(6, 0))
 
         tk.Label(np_frame, text="Ref контрагента-відправника:", bg=COLOR_BG, font=FONT).grid(
             row=1, column=0, sticky="w", pady=3)
         sender_cp_ref_var = tk.StringVar()
-        tk.Entry(np_frame, textvariable=sender_cp_ref_var, width=22, font=FONT).grid(
+        tk.Entry(np_frame, textvariable=sender_cp_ref_var, width=40, font=FONT).grid(
             row=1, column=1, sticky="w", padx=(8, 0), pady=3)
 
         tk.Label(np_frame, text="Ref контактної особи відправника:", bg=COLOR_BG, font=FONT).grid(
             row=2, column=0, sticky="w", pady=3)
         sender_contact_ref_var = tk.StringVar()
-        tk.Entry(np_frame, textvariable=sender_contact_ref_var, width=22, font=FONT).grid(
+        tk.Entry(np_frame, textvariable=sender_contact_ref_var, width=40, font=FONT).grid(
             row=2, column=1, sticky="w", padx=(8, 0), pady=3)
 
         def auto_discover_refs():
