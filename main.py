@@ -850,6 +850,10 @@ class App(tk.Tk):
             width=30, font=FONT
         )
         self.buyer_entry.grid(row=r2, column=1, sticky="w")
+        # покупець і одержувач зазвичай одна й та сама особа — якщо поле
+        # "Одержувач, ПІБ" ще порожнє, підставляємо туди ім'я покупця
+        # (не перезаписуючи, якщо там уже щось вручну вписано)
+        self.buyer_entry.entry.bind("<FocusOut>", self._on_buyer_name_focus_out)
         r2 += 1
 
         tk.Label(right, text="Перевізник:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
@@ -1290,6 +1294,14 @@ class App(tk.Tk):
         self.building_var.set(client.get("building") or "")
         self.apartment_var.set(client.get("apartment") or "")
         self._apply_delivery_state()
+
+    def _on_buyer_name_focus_out(self, event=None):
+        """Покупець і одержувач зазвичай одна й та сама особа: якщо
+        покупця вписано вручну (без вибору з підказок) і поле одержувача
+        ще порожнє — підставляємо туди те саме ім'я."""
+        buyer_name = self.buyer_entry.get().strip()
+        if buyer_name and not self.recipient_name_var.get().strip():
+            self.recipient_name_var.set(buyer_name)
 
     def _on_payment_selected(self, event=None):
         method = self.payment_var.get()
