@@ -512,14 +512,41 @@ class App(tk.Tk):
         tk.Entry(np_frame, textvariable=sender_contact_ref_var, width=22, font=FONT).grid(
             row=2, column=1, sticky="w", padx=(8, 0), pady=3)
 
+        def auto_discover_refs():
+            key = api_key_var.get().strip()
+            if not key:
+                messagebox.showwarning("Увага", "Спочатку вкажіть API-ключ.")
+                return
+            self.config(cursor="watch")
+            self.update_idletasks()
+            try:
+                result = carriers.discover_sender_refs(key)
+                sender_cp_ref_var.set(result["sender_ref"])
+                sender_contact_ref_var.set(result["contact_ref"])
+                messagebox.showinfo(
+                    "Готово",
+                    f"Знайдено відправника «{result['name']}» — Ref-и підставлено автоматично."
+                )
+            except carriers.CarrierAPIError as e:
+                messagebox.showerror("Не вдалось знайти автоматично", str(e))
+            finally:
+                self.config(cursor="")
+
+        tk.Button(np_frame, text="Отримати Ref автоматично", font=FONT_SMALL,
+                  bg="#ECEFF1", fg=COLOR_TEXT, relief="flat", padx=8, pady=3,
+                  cursor="hand2", command=auto_discover_refs).grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(2, 4))
+
         tk.Label(np_frame,
                  text="Ref контрагента й контактної особи відправника — це ваші\n"
-                      "ідентифікатори в системі Нової Пошти (my.novaposhta.ua,\n"
-                      "розділ «Контрагенти», або служба підтримки для бізнес-акаунту).\n"
+                      "ідентифікатори в системі Нової Пошти. Кнопка вище знаходить\n"
+                      "їх автоматично за API-ключем (перший зареєстрований\n"
+                      "відправник на акаунті); якщо не спрацює — їх можна взяти\n"
+                      "в кабінеті my.novaposhta.ua, розділ «Контрагенти».\n"
                       "Для САТ і Делівері API поки не підключено — досить міста й\n"
                       "відділення вище, ТТН для них створюється вручну.",
                  bg=COLOR_BG, fg=COLOR_TEXT_MUTED, font=FONT_SMALL,
-                 justify="left").grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                 justify="left").grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         def update_carrier_fields(*_args):
             carrier = carrier_var.get()
@@ -813,7 +840,7 @@ class App(tk.Tk):
         r2 += 1
 
         tk.Label(right, text="Оплата доставки:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
-        self.payer_type_var = tk.StringVar(value="sender")
+        self.payer_type_var = tk.StringVar(value="recipient")
         payer_frame = tk.Frame(right, bg=COLOR_BG)
         payer_frame.grid(row=r2, column=1, sticky="w")
         tk.Radiobutton(payer_frame, text="Відправник", variable=self.payer_type_var,
@@ -858,10 +885,9 @@ class App(tk.Tk):
             variable=self.auto_ttn_var, font=FONT, bg=COLOR_BG
         )
         self.auto_ttn_check.pack(anchor="w")
-        self.ttn_status_label = tk.Label(ttn_frame, text="", font=FONT_SMALL,
-                                          bg=COLOR_BG, fg=COLOR_TEXT_MUTED,
-                                          wraplength=340, justify="left")
-        self.ttn_status_label.pack(anchor="w", pady=(2, 0))
+        # прихований лейбл-підказка: логіка вмикання/вимикання прапорця (напр.
+        # для самовивозу) лишається, але текст користувачу більше не показуємо
+        self.ttn_status_label = tk.Label(ttn_frame, text="")
         r2 += 1
 
         tk.Label(right, text="№ ТТН:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
@@ -1344,7 +1370,7 @@ class App(tk.Tk):
         self.oblast_entry.set("")
         self.city_entry.set("")
         self.recipient_name_var.set("")
-        self.payer_type_var.set("sender")
+        self.payer_type_var.set("recipient")
         self.seats_amount_var.set("1")
         self.cod_enabled_var.set(False)
         self.cod_amount_var.set("")

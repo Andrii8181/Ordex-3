@@ -291,3 +291,38 @@ def _track_status_nova_poshta(ttn, credentials, recipient_phone=None):
     status_text = info.get("Status") or "Статус невідомий"
     delivered = any(kw in status_text.lower() for kw in _DELIVERED_KEYWORDS)
     return {"status": status_text, "delivered": delivered, "raw": info}
+
+
+def discover_sender_refs(api_key):
+    """
+    Автоматично знаходить Ref зареєстрованого відправника й Ref його
+    контактної особи на акаунті цього API-ключа — без ручного пошуку в
+    кабінеті Нової Пошти. Повертає {"sender_ref", "contact_ref", "name"}.
+    Кидає CarrierAPIError, якщо на акаунті ще не заведено відправника.
+    """
+    if not REQUESTS_AVAILABLE:
+        raise CarrierAPIError("Модуль мережевих запитів (requests) недоступний у цій збірці.")
+    if not api_key:
+        raise CarrierAPIError("Спочатку вкажіть API-ключ.")
+
+    senders = _np_request(api_key, "Counterparty", "getCounterparties",
+                           {"CounterpartyProperty": "Sender", "Page": "1"})
+    if not senders:
+        raise CarrierAPIError(
+            "На цьому акаунті ще не заведено жодного відправника. Додайте його в "
+            "особистому кабінеті my.novaposhta.ua -> Контрагенти -> Додати відправника."
+        )
+    sender = senders[0]
+    sender_ref = sender.get("Ref")
+    sender_name = sender.get("Description") or sender.get("CounterpartyName") or ""
+
+    contacts = _np_request(api_key, "ContactPerson", "getCounterpartyContactPersons",
+                            {"Ref": sender_ref, "Page": "1"})
+    if not contacts:
+        raise CarrierAPIError(
+            f"Знайдено відправника «{sender_name}», але в нього немає жодної "
+            f"контактної особи. Додайте її в кабінеті Нової Пошти."
+        )
+    contact_ref = contacts[0].get("Ref")
+
+    return {"sender_ref": sender_ref, "contact_ref": contact_ref, "name": sender_name}
