@@ -23,21 +23,26 @@ jobs:
 
       - name: Встановити залежності
         run: |
-          pip install openpyxl pyinstaller
+          pip install -r requirements.txt pyinstaller
+
+      - name: Перевірити, що matplotlib та requests встановлено
+        run: |
+          python -c "import matplotlib; print('matplotlib version:', matplotlib.__version__)"
+          python -c "import requests; print('requests version:', requests.__version__)"
 
       - name: Зібрати .exe
         run: |
-          pyinstaller --onefile --windowed --name "ЧСМ-Заявки" main.py
+          pyinstaller --onefile --windowed --name "Ordex" --icon "assets/ordex_icon.ico" --add-data "assets;assets" --collect-all matplotlib --collect-all requests --collect-all certifi --hidden-import matplotlib.backends.backend_tkagg main.py
 
       - name: Завантажити готовий .exe (тимчасово, для швидкої перевірки)
         uses: actions/upload-artifact@v4
         with:
-          name: ЧСМ-Заявки-exe
-          path: dist/ЧСМ-Заявки.exe
+          name: Ordex-exe
+          path: dist/Ordex.exe
 
       - name: Опублікувати Release з .exe (постійне посилання)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
           name: Збірка №${{ github.run_number }}
-          files: dist/ЧСМ-Заявки.exe
+          files: dist/Ordex.exe
