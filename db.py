@@ -215,6 +215,7 @@ def init_db():
     _ensure_column(conn, "orders", "recipient_edrpou", "TEXT")
     _ensure_column(conn, "orders", "sender_warehouse_number", "TEXT")
     _ensure_column(conn, "orders", "ttn_pdf_path", "TEXT")
+    _ensure_column(conn, "orders", "order_status", "TEXT")
 
     _migrate_to_senders_table(conn)
     conn.commit()
@@ -654,6 +655,7 @@ def list_active_ttn_orders():
         WHERE ttn IS NOT NULL AND ttn != ''
           AND (tracking_delivered IS NULL OR tracking_delivered = 0)
           AND (ttn_status IS NULL OR ttn_status != 'cancelled')
+          AND (order_status IS NULL OR order_status != 'cancelled')
         ORDER BY id DESC
     """)
     result = [dict(row) for row in cur.fetchall()]
@@ -685,6 +687,32 @@ def mark_order_ttn_cancelled(order_id):
                            tracking_updated_at = ?
         WHERE id = ?
     """, (datetime.now().isoformat(timespec="seconds"), order_id))
+    conn.commit()
+    conn.close()
+
+
+def cancel_order(order_id):
+    """
+    Позначає всю заявку як скасовану, не видаляючи фізично. Лишено для
+    сумісності зі старими базами (заявки, скасовані до переходу на повне
+    видалення) — сама програма більше цю функцію не викликає, натомість
+    використовує delete_order (див. нижче).
+    """
+    conn = get_connection()
+    conn.execute("UPDATE orders SET order_status = 'cancelled' WHERE id = ?", (order_id,))
+    conn.commit()
+    conn.close()
+
+
+def delete_order(order_id):
+    """
+    Остаточно видаляє заявку та всі її товарні рядки з бази даних.
+    Незворотно — номер заявки після цього більше ніде не фігурує,
+    і його безпечно використати повторно.
+    """
+    conn = get_connection()
+    conn.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
+    conn.execute("DELETE FROM orders WHERE id = ?", (order_id,))
     conn.commit()
     conn.close()
 
@@ -809,7 +837,8 @@ def get_orders_in_range(date_from, date_to):
 
 
 def report_summary(date_from, date_to):
-    """Загальні підсумки за період: кількість заявок, сума, вага, середній чек."""
+    """Загальні підсумки за період: кількість заявок, сума, вага, середній чек.
+    Скасовані заявки не враховуються — вони не є реальними продажами."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -818,6 +847,7 @@ def report_summary(date_from, date_to):
                COALESCE(SUM(total_weight), 0) AS total_weight
         FROM orders
         WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+          AND (order_status IS NULL OR order_status != 'cancelled')
     """, (date_from, date_to))
     row = dict(cur.fetchone())
     conn.close()
@@ -826,7 +856,8 @@ def report_summary(date_from, date_to):
 
 
 def report_by_product(date_from, date_to):
-    """Продажі по товарах: сумарна кількість, сума, вага."""
+    """Продажі по товарах: сумарна кількість, сума, вага.
+    Скасовані заявки не враховуються."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -839,6 +870,7 @@ def report_by_product(date_from, date_to):
         FROM order_items oi
         JOIN orders o ON o.id = oi.order_id
         WHERE substr(o.order_date, 1, 10) BETWEEN ? AND ?
+          AND (o.order_status IS NULL OR o.order_status != 'cancelled')
         GROUP BY oi.name, oi.code
         ORDER BY total_sum DESC
     """, (date_from, date_to))
@@ -848,7 +880,7 @@ def report_by_product(date_from, date_to):
 
 
 def report_by_client(date_from, date_to):
-    """Продажі по клієнтах."""
+    """Продажі по клієнтах. Скасовані заявки не враховуються."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -858,6 +890,7 @@ def report_by_client(date_from, date_to):
                SUM(total_weight) AS total_weight
         FROM orders
         WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+          AND (order_status IS NULL OR order_status != 'cancelled')
         GROUP BY buyer_name
         ORDER BY total_sum DESC
     """, (date_from, date_to))
@@ -867,7 +900,7 @@ def report_by_client(date_from, date_to):
 
 
 def report_by_geo(date_from, date_to):
-    """Продажі по областях/містах одержувачів."""
+    """Продажі по областях/містах одержувачів. Скасовані заявки не враховуються."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -877,6 +910,7 @@ def report_by_geo(date_from, date_to):
                SUM(total_sum) AS total_sum
         FROM orders
         WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+          AND (order_status IS NULL OR order_status != 'cancelled')
         GROUP BY oblast, city
         ORDER BY total_sum DESC
     """, (date_from, date_to))
@@ -886,7 +920,7 @@ def report_by_geo(date_from, date_to):
 
 
 def report_by_carrier(date_from, date_to):
-    """Продажі по перевізниках."""
+    """Продажі по перевізниках. Скасовані заявки не враховуються."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -895,6 +929,7 @@ def report_by_carrier(date_from, date_to):
                SUM(total_sum) AS total_sum
         FROM orders
         WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+          AND (order_status IS NULL OR order_status != 'cancelled')
         GROUP BY carrier
         ORDER BY total_sum DESC
     """, (date_from, date_to))
@@ -904,7 +939,7 @@ def report_by_carrier(date_from, date_to):
 
 
 def report_timeseries(date_from, date_to):
-    """Динаміка продажів по днях (для графіка)."""
+    """Динаміка продажів по днях (для графіка). Скасовані заявки не враховуються."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
@@ -913,6 +948,7 @@ def report_timeseries(date_from, date_to):
                SUM(total_sum) AS total_sum
         FROM orders
         WHERE substr(order_date, 1, 10) BETWEEN ? AND ?
+          AND (order_status IS NULL OR order_status != 'cancelled')
         GROUP BY day
         ORDER BY day
     """, (date_from, date_to))

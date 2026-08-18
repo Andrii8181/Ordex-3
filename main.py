@@ -8,7 +8,7 @@ import subprocess
 import sys
 import json
 import threading
-import tkinter as tk 
+import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from datetime import datetime, date, timedelta
 
@@ -1087,16 +1087,20 @@ class App(tk.Tk):
         self.items_tree.bind("<Button-5>", on_items_wheel)
 
         btn_row = tk.Frame(canvas_wrap)
-        btn_row.pack(fill="x", padx=14)
+        btn_row.pack(fill="x", padx=14, pady=(4, 0))
         tk.Button(btn_row, text="Видалити вибраний рядок", font=FONT,
                   command=self._remove_selected_item).pack(side="left")
 
-        self.totals_label = tk.Label(canvas_wrap, text="Разом: 0.00 грн,  0.00 кг", font=FONT_BOLD)
-        self.totals_label.pack(anchor="e", padx=14, pady=4)
-
-        tk.Button(canvas_wrap, text="Сформувати заявку", bg=COLOR_ACCENT, fg="white",
+        # "Разом" і кнопка формування заявки — в один рядок одразу під
+        # таблицею товарів, а не окремими рядками нижче
+        totals_row = tk.Frame(canvas_wrap)
+        totals_row.pack(fill="x", padx=14, pady=14)
+        tk.Button(totals_row, text="Сформувати заявку", bg=COLOR_ACCENT, fg="white",
                   activebackground=COLOR_ACCENT_DARK, activeforeground="white",
-                  font=FONT_BOLD, padx=22, pady=10, command=self._generate_order).pack(pady=14)
+                  font=FONT_BOLD, padx=22, pady=10,
+                  command=self._generate_order).pack(side="left")
+        self.totals_label = tk.Label(totals_row, text="Разом: 0.00 грн,  0.00 кг", font=FONT_BOLD)
+        self.totals_label.pack(side="right", anchor="s", pady=(0, 4))
 
         # -- колесо миші прокручує область під курсором: над формою — форму,
         # над таблицею товарів — саму таблицю (вона виключена через skip) --
@@ -1780,7 +1784,9 @@ class App(tk.Tk):
         headers = ["№", "Дата", "Покупець", "Сума", "Вага", "№ ТТН", "Статус доставки", "Файл"]
         self.history_tree = ttk.Treeview(parent, columns=cols, show="headings")
         for c, h in zip(cols, headers):
-            self.history_tree.heading(c, text=h)
+            # клік по заголовку сортує за цією колонкою (з прив'язкою рядка
+            # цілком — не тільки значення колонки)
+            self.history_tree.heading(c, text=h, command=lambda col=c: self._sort_history(col))
             self.history_tree.column(c, width=110, anchor="center")
         self.history_tree.column("buyer", width=190, anchor="w")
         self.history_tree.column("ttn", width=130, anchor="center")
@@ -1790,6 +1796,7 @@ class App(tk.Tk):
         self.history_tree.tag_configure("in_transit", background="#FFF6DA")
         self.history_tree.tag_configure("ttn_failed", background="#FBE1E1")
         self.history_tree.tag_configure("cancelled", background="#E5E5E5")
+        self.history_tree.tag_configure("order_cancelled", background="#F5C6C6")
         self.history_tree.tag_configure("no_ttn", background=COLOR_CARD)
 
         self.history_tree.pack(fill="both", expand=True, padx=14, pady=10)
@@ -1804,17 +1811,33 @@ class App(tk.Tk):
         tk.Button(btn_row, text="Скасувати ТТН", font=FONT, bg="#FBE1E1", fg=COLOR_TEXT,
                   relief="flat", padx=10, pady=4, cursor="hand2",
                   command=self._cancel_selected_ttn).pack(side="left")
+        tk.Button(btn_row, text="Видалити заявку", font=FONT, bg="#E5A3A3", fg="white",
+                  relief="flat", padx=10, pady=4, cursor="hand2",
+                  command=self._cancel_selected_order).pack(side="left", padx=8)
+
+        # стан сортування: (ключ_колонки, reverse)
+        self._history_orders = []
+        self._history_sort_column = None
+        self._history_sort_reverse = False
 
     def _refresh_history(self):
+        self._history_orders = db.list_orders()
+        self._render_history_rows(self._history_orders)
+
+    def _render_history_rows(self, orders):
         self.history_tree.delete(*self.history_tree.get_children())
-        for o in db.list_orders():
+        for o in orders:
             ttn_display = o.get("ttn") or ("не створено" if o.get("ttn_status") == "failed" else "")
-            if o.get("ttn_status") == "cancelled":
+            if o.get("order_status") == "cancelled":
+                status_display = "ЗАЯВКУ СКАСОВАНО"
+            elif o.get("ttn_status") == "cancelled":
                 status_display = "ТТН скасовано"
             else:
                 status_display = o.get("tracking_status") or ""
 
-            if o.get("ttn_status") == "cancelled":
+            if o.get("order_status") == "cancelled":
+                tag = "order_cancelled"
+            elif o.get("ttn_status") == "cancelled":
                 tag = "cancelled"
             elif o.get("ttn_status") == "failed" and not o.get("ttn"):
                 tag = "ttn_failed"
@@ -1831,12 +1854,73 @@ class App(tk.Tk):
                 status_display, o["file_name"]
             ), tags=(tag,))
 
+    def _sort_history(self, column):
+        if self._history_sort_column == column:
+            self._history_sort_reverse = not self._history_sort_reverse
+        else:
+            self._history_sort_column = column
+            self._history_sort_reverse = False
+
+        def sort_key(o):
+            if column == "number":
+                val = o.get("order_number") or ""
+                try:
+                    return (0, float(val))
+                except (TypeError, ValueError):
+                    return (1, str(val))
+            if column == "date":
+                return o.get("order_date") or ""
+            if column == "buyer":
+                return (o.get("buyer_name") or "").lower()
+            if column == "sum":
+                return o.get("total_sum") or 0
+            if column == "weight":
+                return o.get("total_weight") or 0
+            if column == "ttn":
+                return o.get("ttn") or ""
+            if column == "status":
+                if o.get("order_status") == "cancelled":
+                    return "ЗАЯВКУ СКАСОВАНО"
+                return o.get("tracking_status") or ""
+            if column == "file":
+                return (o.get("file_name") or "").lower()
+            return ""
+
+        sorted_orders = sorted(self._history_orders, key=sort_key, reverse=self._history_sort_reverse)
+        self._render_history_rows(sorted_orders)
+
+        # позначаємо колонку стрілкою напряму в заголовку, щоб було видно,
+        # за чим і в якому напрямку зараз відсортовано
+        cols = ("number", "date", "buyer", "sum", "weight", "ttn", "status", "file")
+        headers = ["№", "Дата", "Покупець", "Сума", "Вага", "№ ТТН", "Статус доставки", "Файл"]
+        arrow = " ▼" if self._history_sort_reverse else " ▲"
+        for c, h in zip(cols, headers):
+            text = h + (arrow if c == column else "")
+            self.history_tree.heading(c, text=text)
+
     def _cancel_selected_ttn(self):
         sel = self.history_tree.selection()
         if not sel:
             messagebox.showwarning("Увага", "Виберіть заявку в списку.")
             return
         self._cancel_ttn_for_order(int(sel[0]))
+
+    def _perform_ttn_cancel(self, order):
+        """Сама дія скасування ТТН без жодних діалогів — повертає
+        (True, None) при успіху або (False, текст_помилки) при невдачі.
+        Викликається і зі скасування самого ТТН, і зі скасування заявки
+        цілком."""
+        sender = db.get_sender(order.get("payment_method") or "")
+        if sender and sender.get("carrier") == order.get("carrier"):
+            credentials = {"api_key": sender.get("api_key"), "extra": sender.get("extra") or {}}
+        else:
+            credentials = None
+        try:
+            carriers.cancel_ttn(order["carrier"], order.get("ttn_ref"), credentials)
+            db.mark_order_ttn_cancelled(order["id"])
+            return True, None
+        except carriers.CarrierAPIError as e:
+            return False, str(e)
 
     def _cancel_ttn_for_order(self, order_id, refresh_dialog_callback=None):
         order = db.get_order(order_id)
@@ -1859,29 +1943,65 @@ class App(tk.Tk):
         if not confirm:
             return
 
-        sender = db.get_sender(order.get("payment_method") or "")
-        if sender and sender.get("carrier") == order.get("carrier"):
-            credentials = {"api_key": sender.get("api_key"), "extra": sender.get("extra") or {}}
+        self.config(cursor="watch")
+        self.update_idletasks()
+        ok, err = self._perform_ttn_cancel(order)
+        self.config(cursor="")
+        if ok:
+            messagebox.showinfo("Готово", f"ТТН №{order['ttn']} скасовано.")
         else:
-            credentials = None
+            messagebox.showerror(
+                "Не вдалось скасувати",
+                f"{err}\n\nЯкщо посилку вже прийняв перевізник, скасувати ТТН "
+                f"можна лише через його підтримку або кабінет."
+            )
+        self._refresh_history()
+        if refresh_dialog_callback:
+            refresh_dialog_callback()
+
+    def _cancel_selected_order(self):
+        sel = self.history_tree.selection()
+        if not sel:
+            messagebox.showwarning("Увага", "Виберіть заявку в списку.")
+            return
+        self._cancel_order_for_order(int(sel[0]))
+
+    def _cancel_order_for_order(self, order_id, refresh_dialog_callback=None):
+        order = db.get_order(order_id)
+        if not order:
+            return
+
+        has_active_ttn = bool(order.get("ttn")) and order.get("ttn_status") != "cancelled"
+        extra_warning = (" Перед видаленням буде автоматично скасовано її ТТН."
+                          if has_active_ttn else "")
+        confirm = messagebox.askyesno(
+            "Видалити заявку?",
+            f"Видалити заявку №{order['order_number']} (створена помилково)?"
+            f"{extra_warning}\n\n"
+            f"Це остаточно — заявку і її товарні рядки буде видалено з "
+            f"історії без можливості відновлення. Номер {order['order_number']} "
+            f"після цього можна буде використати повторно."
+        )
+        if not confirm:
+            return
 
         self.config(cursor="watch")
         self.update_idletasks()
-        try:
-            carriers.cancel_ttn(order["carrier"], order.get("ttn_ref"), credentials)
-            db.mark_order_ttn_cancelled(order_id)
-            messagebox.showinfo("Готово", f"ТТН №{order['ttn']} скасовано.")
-        except carriers.CarrierAPIError as e:
-            messagebox.showerror(
-                "Не вдалось скасувати",
-                f"{e}\n\nЯкщо посилку вже прийняв перевізник, скасувати ТТН "
-                f"можна лише через його підтримку або кабінет."
-            )
-        finally:
-            self.config(cursor="")
-            self._refresh_history()
-            if refresh_dialog_callback:
-                refresh_dialog_callback()
+        ttn_note = ""
+        if has_active_ttn:
+            ok, err = self._perform_ttn_cancel(order)
+            if ok:
+                ttn_note = f"\nТТН №{order['ttn']} також скасовано."
+            else:
+                ttn_note = (f"\n\nУвага: ТТН скасувати не вдалось ({err}). "
+                            f"Перевірте вручну на сайті перевізника — заявку "
+                            f"все одно буде видалено з історії.")
+        db.delete_order(order_id)
+        self.config(cursor="")
+        messagebox.showinfo("Готово", f"Заявку №{order['order_number']} видалено.{ttn_note}")
+        self._refresh_history()
+        if refresh_dialog_callback:
+            refresh_dialog_callback()
 
     @staticmethod
     def _open_file_externally(path):
@@ -1919,9 +2039,20 @@ class App(tk.Tk):
         wrap = tk.Frame(win, bg=COLOR_BG, padx=16, pady=16)
         wrap.pack(fill="both", expand=True)
 
-        tk.Label(wrap, text=f"Заявка № {order['order_number']} від "
-                             f"{(order['order_date'] or '')[:10]}",
-                 font=FONT_BOLD, bg=COLOR_BG, fg=COLOR_TEXT).pack(anchor="w", pady=(0, 10))
+        title_row = tk.Frame(wrap, bg=COLOR_BG)
+        title_row.pack(fill="x", pady=(0, 10))
+        tk.Label(title_row, text=f"Заявка № {order['order_number']} від "
+                                  f"{(order['order_date'] or '')[:10]}",
+                 font=FONT_BOLD, bg=COLOR_BG, fg=COLOR_TEXT).pack(side="left", anchor="w")
+        if order.get("order_status") == "cancelled":
+            tk.Label(title_row, text="ЗАЯВКУ СКАСОВАНО", font=FONT_BOLD, bg=COLOR_BG,
+                     fg="#C0392B").pack(side="left", padx=(14, 0))
+        else:
+            def cancel_order_and_refresh():
+                self._cancel_order_for_order(order_id, refresh_dialog_callback=lambda: win.destroy())
+            tk.Button(title_row, text="Видалити заявку", font=FONT_SMALL, bg="#E5A3A3", fg="white",
+                      relief="flat", padx=10, pady=4, cursor="hand2",
+                      command=cancel_order_and_refresh).pack(side="right")
 
         info_frame = tk.Frame(wrap, bg=COLOR_BG)
         info_frame.pack(fill="x")
@@ -2045,8 +2176,9 @@ class App(tk.Tk):
         file_btns = tk.Frame(wrap, bg=COLOR_BG)
         file_btns.pack(fill="x", pady=(14, 0))
         order_file_path = os.path.join(OUTPUT_DIR, order["file_name"])
-        tk.Button(file_btns, text="Відкрити файл заявки (Excel)", font=FONT_SMALL,
-                  bg="#ECEFF1", fg=COLOR_TEXT, relief="flat", padx=10, pady=4,
+        tk.Button(file_btns, text="Відкрити файл заявки (Excel)", font=FONT_BOLD,
+                  bg=COLOR_ACCENT, fg="white", activebackground=COLOR_ACCENT_DARK,
+                  activeforeground="white", relief="flat", padx=14, pady=8,
                   cursor="hand2",
                   command=lambda: self._open_file_externally(order_file_path)
                   if os.path.exists(order_file_path) else
@@ -2157,19 +2289,24 @@ class App(tk.Tk):
         tk.Button(filter_frame, text="Зберегти в Excel", font=FONT,
                   command=lambda: self._export_report(key)).pack(side="left", padx=(0, 8))
         tk.Button(filter_frame, text="Скопіювати в буфер", font=FONT,
-                  command=lambda: self._copy_report(key)).pack(side="left")
+                  command=lambda: self._copy_report(key)).pack(side="left", padx=(0, 8))
+        toggle_btn = tk.Button(filter_frame, text="Графік", font=FONT, bg=COLOR_ACCENT, fg="white",
+                                activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                                relief="flat", padx=10, pady=4, cursor="hand2",
+                                command=lambda: self._toggle_report_view(key))
+        toggle_btn.pack(side="left")
 
+        # -- таблиця й графік більше не тісняться поруч: показуємо по черзі
+        # на весь доступний простір, перемикаючись кнопкою "Графік" вище --
         body = tk.Frame(parent)
         body.pack(fill="both", expand=True, padx=14, pady=8)
 
         table_frame = tk.Frame(body)
-        table_frame.pack(side="left", fill="both", expand=True)
-        tree = ttk.Treeview(table_frame, show="headings", height=14)
+        tree = ttk.Treeview(table_frame, show="headings", height=16)
         tree.pack(fill="both", expand=True)
+        table_frame.pack(side="left", fill="both", expand=True)
 
-        chart_frame = tk.Frame(body, width=420)
-        chart_frame.pack(side="left", fill="both", padx=(14, 0))
-        chart_frame.pack_propagate(False)
+        chart_frame = tk.Frame(body)
 
         summary_label = tk.Label(parent, text="", font=FONT_BOLD, anchor="w", justify="left")
         summary_label.pack(fill="x", padx=14, pady=(0, 10))
@@ -2178,11 +2315,27 @@ class App(tk.Tk):
         parent.date_from_var = date_from_var
         parent.date_to_var = date_to_var
         parent.tree = tree
+        parent.table_frame = table_frame
         parent.chart_frame = chart_frame
+        parent.toggle_btn = toggle_btn
+        parent.view_mode = "table"
         parent.summary_label = summary_label
         parent.current_headers = []
         parent.current_rows = []
         parent.canvas = None
+
+    def _toggle_report_view(self, key):
+        view = self.views[key]
+        if view.view_mode == "table":
+            view.table_frame.pack_forget()
+            view.chart_frame.pack(side="left", fill="both", expand=True)
+            view.view_mode = "chart"
+            view.toggle_btn.configure(text="Таблиця")
+        else:
+            view.chart_frame.pack_forget()
+            view.table_frame.pack(side="left", fill="both", expand=True)
+            view.view_mode = "table"
+            view.toggle_btn.configure(text="Графік")
 
     def _parse_date(self, text):
         return datetime.strptime(text.strip(), "%d.%m.%Y").date()
@@ -2258,14 +2411,14 @@ class App(tk.Tk):
 
         ts = db.report_timeseries(df, dt)
         if MATPLOTLIB_AVAILABLE:
-            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            fig = Figure(figsize=(9.5, 5.5), dpi=100)
             ax = fig.add_subplot(111)
             if ts:
                 days = [r["day"][5:] for r in ts]
                 sums = [r["total_sum"] for r in ts]
                 ax.bar(days, sums, color="#2e7d32")
-                ax.set_title("Сума продажів по днях", fontsize=10)
-                ax.tick_params(axis="x", labelrotation=90, labelsize=7)
+                ax.set_title("Сума продажів по днях", fontsize=13)
+                ax.tick_params(axis="x", labelrotation=90, labelsize=9)
             else:
                 ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
             fig.tight_layout()
@@ -2285,15 +2438,15 @@ class App(tk.Tk):
         self._set_table(view, headers, rows)
 
         if MATPLOTLIB_AVAILABLE:
-            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            fig = Figure(figsize=(9.5, 5.5), dpi=100)
             ax = fig.add_subplot(111)
             top = data[:10]
             if top:
                 names = [d["product_name"][:14] for d in top][::-1]
                 sums = [d["total_sum"] for d in top][::-1]
                 ax.barh(names, sums, color="#1565c0")
-                ax.set_title("Топ-10 товарів за сумою", fontsize=10)
-                ax.tick_params(axis="y", labelsize=7)
+                ax.set_title("Топ-10 товарів за сумою", fontsize=13)
+                ax.tick_params(axis="y", labelsize=9)
             else:
                 ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
             fig.tight_layout()
@@ -2311,15 +2464,15 @@ class App(tk.Tk):
         self._set_table(view, headers, rows)
 
         if MATPLOTLIB_AVAILABLE:
-            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            fig = Figure(figsize=(9.5, 5.5), dpi=100)
             ax = fig.add_subplot(111)
             top = data[:10]
             if top:
                 names = [d["buyer_name"][:14] for d in top][::-1]
                 sums = [d["total_sum"] for d in top][::-1]
                 ax.barh(names, sums, color="#6a1b9a")
-                ax.set_title("Топ-10 клієнтів за сумою", fontsize=10)
-                ax.tick_params(axis="y", labelsize=7)
+                ax.set_title("Топ-10 клієнтів за сумою", fontsize=13)
+                ax.tick_params(axis="y", labelsize=9)
             else:
                 ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
             fig.tight_layout()
@@ -2336,15 +2489,15 @@ class App(tk.Tk):
         self._set_table(view, headers, rows)
 
         if MATPLOTLIB_AVAILABLE:
-            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            fig = Figure(figsize=(9.5, 5.5), dpi=100)
             ax = fig.add_subplot(111)
             top = data[:10]
             if top:
                 labels = [f"{d['oblast'][:10]}/{d['city'][:10]}" for d in top][::-1]
                 sums = [d["total_sum"] for d in top][::-1]
                 ax.barh(labels, sums, color="#ef6c00")
-                ax.set_title("Топ-10 напрямків доставки", fontsize=10)
-                ax.tick_params(axis="y", labelsize=7)
+                ax.set_title("Топ-10 напрямків доставки", fontsize=13)
+                ax.tick_params(axis="y", labelsize=9)
             else:
                 ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
             fig.tight_layout()
@@ -2361,13 +2514,13 @@ class App(tk.Tk):
         self._set_table(view, headers, rows)
 
         if MATPLOTLIB_AVAILABLE:
-            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            fig = Figure(figsize=(9.5, 5.5), dpi=100)
             ax = fig.add_subplot(111)
             if data:
                 labels = [d["carrier"] for d in data]
                 sums = [d["total_sum"] for d in data]
-                ax.pie(sums, labels=labels, autopct="%1.0f%%", textprops={"fontsize": 8})
-                ax.set_title("Розподіл продажів по перевізниках", fontsize=10)
+                ax.pie(sums, labels=labels, autopct="%1.0f%%", textprops={"fontsize": 10})
+                ax.set_title("Розподіл продажів по перевізниках", fontsize=13)
             else:
                 ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
             fig.tight_layout()
@@ -2384,14 +2537,14 @@ class App(tk.Tk):
         self._set_table(view, headers, rows)
 
         if MATPLOTLIB_AVAILABLE:
-            fig = Figure(figsize=(4.2, 3.6), dpi=100)
+            fig = Figure(figsize=(9.5, 5.5), dpi=100)
             ax = fig.add_subplot(111)
             if data:
                 days = [d["day"][5:] for d in data]
                 sums = [d["total_sum"] for d in data]
                 ax.plot(days, sums, marker="o", color="#c62828")
-                ax.set_title("Динаміка суми продажів", fontsize=10)
-                ax.tick_params(axis="x", labelrotation=90, labelsize=7)
+                ax.set_title("Динаміка суми продажів", fontsize=13)
+                ax.tick_params(axis="x", labelrotation=90, labelsize=9)
             else:
                 ax.text(0.5, 0.5, "Немає даних", ha="center", va="center")
             fig.tight_layout()
