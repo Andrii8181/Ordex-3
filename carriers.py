@@ -26,6 +26,8 @@ try:
 except ImportError:
     REQUESTS_AVAILABLE = False
 
+import db
+
 NOVA_POSHTA_API_URL = "https://api.novaposhta.ua/v2.0/json/"
 REQUEST_TIMEOUT = 20
 
@@ -128,6 +130,7 @@ def _get_or_create_recipient(api_key, recipient_name, recipient_phone, city_ref,
     системі Нової Пошти й повертає (ref_контрагента, ref_контактної_особи).
     recipient_type: "individual" (фізична особа) або "legal" (юридична особа).
     """
+    recipient_phone = db.format_phone_for_api(recipient_phone)
     if recipient_type == "legal":
         if not edrpou:
             raise CarrierAPIError("Для одержувача-юридичної особи потрібен код ЄДРПОУ.")
@@ -257,12 +260,12 @@ def _create_ttn_nova_poshta(header, items, credentials):
         "Sender": sender_counterparty_ref,
         "SenderAddress": sender_warehouse_ref,
         "ContactSender": sender_contact_ref,
-        "SendersPhone": sender_phone,
+        "SendersPhone": db.format_phone_for_api(sender_phone),
         "CityRecipient": recipient_city_ref,
         "Recipient": recipient_counterparty_ref,
         "RecipientAddress": recipient_warehouse_ref,
         "ContactRecipient": recipient_contact_ref,
-        "RecipientsPhone": header["recipient_phone"],
+        "RecipientsPhone": db.format_phone_for_api(header["recipient_phone"]),
     }
 
     # -- накладений платіж (готівка, яку перевізник збирає з одержувача

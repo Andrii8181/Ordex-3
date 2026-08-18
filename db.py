@@ -12,10 +12,30 @@ db.py — робота з базою даних SQLite для програми �
 """
 import sqlite3
 import os
+import sys
 import json
 from datetime import datetime, date
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "order_app.db")
+
+def _get_persistent_base_dir():
+    """
+    Повертає папку, де мають зберігатись файли програми (база даних,
+    заявки), яка НЕ зникає після закриття програми.
+
+    Критично важливо для зібраного .exe: PyInstaller (--onefile) при
+    кожному запуску розпаковує програму у ТИМЧАСОВУ папку, і саме туди
+    вказує __file__ всередині запущеної програми. Ця тимчасова папка
+    видаляється Windows одразу після закриття програми — тому раніше
+    база даних і всі файли фактично створювались "у нікуди" й губились
+    при кожному перезапуску. Натомість sys.executable завжди вказує на
+    справжнє розташування самого .exe-файлу, яке не зникає.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+DB_PATH = os.path.join(_get_persistent_base_dir(), "order_app.db")
 
 
 def get_connection():
@@ -399,6 +419,39 @@ def search_clients(prefix, limit=15):
 
 def _normalize_phone(phone):
     return "".join(ch for ch in (phone or "") if ch.isdigit())
+
+
+def format_phone_display(phone):
+    """
+    Приводить будь-який введений телефон до єдиного вигляду +380XXXXXXXXX
+    (стандарт, який вимагають перевізники для ТТН). Розпізнає українські
+    номери в популярних форматах: "0671112233", "380671112233",
+    "+380671112233", з пробілами/дужками/тире — усе це стає
+    "+380671112233". Якщо номер не схожий на український мобільний
+    (інша кількість цифр) — повертає його як є, без вигадування зайвого.
+    """
+    digits = _normalize_phone(phone)
+    if not digits:
+        return phone or ""
+    if digits.startswith("380") and len(digits) == 12:
+        pass
+    elif digits.startswith("0") and len(digits) == 10:
+        digits = "380" + digits[1:]
+    elif len(digits) == 9:
+        digits = "380" + digits
+    else:
+        return phone.strip() if phone else ""  # незвичний формат — не чіпаємо
+    return "+" + digits
+
+
+def format_phone_for_api(phone):
+    """
+    Те саме, що format_phone_display, але без символу '+' — саме такий
+    вигляд (лише цифри, з кодом країни 380) очікують методи API
+    перевізників (SendersPhone/RecipientsPhone тощо).
+    """
+    display = format_phone_display(phone)
+    return display[1:] if display.startswith("+") else display
 
 
 def search_clients_by_phone(prefix, limit=15):

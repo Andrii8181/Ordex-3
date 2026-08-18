@@ -10,6 +10,7 @@ Frame фактично малювались, але були невидимі ч
 областю батьківського віджета).
 """
 import tkinter as tk
+import tkinter.font as tkfont
 
 
 class AutocompleteEntry(tk.Frame):
@@ -77,26 +78,39 @@ class AutocompleteEntry(tk.Frame):
 
     def _show_list(self, results):
         self._results = results
+        row_height = min(6, len(results))
         if self.popup is None or not self.popup.winfo_exists():
             self.popup = tk.Toplevel(self)
             self.popup.wm_overrideredirect(True)
             self.popup.attributes("-topmost", True)
-            self.listbox = tk.Listbox(self.popup, height=min(6, len(results)),
+            self.listbox = tk.Listbox(self.popup, height=row_height,
                                        font=self._font, activestyle="dotbox",
-                                       exportselection=False)
+                                       exportselection=False,
+                                       relief="solid", borderwidth=1)
             self.listbox.pack(fill="both", expand=True)
             self.listbox.bind("<ButtonRelease-1>", self._on_pick)
             self.listbox.bind("<Return>", self._on_pick)
 
-        self.listbox.configure(height=min(6, len(results)))
+        self.listbox.configure(height=row_height)
         self.listbox.delete(0, tk.END)
         for label, _payload in results:
             self.listbox.insert(tk.END, label)
 
+        # -- ширина підказок: підлаштовується під найдовший текст у списку,
+        # а не обрізається шириною самого поля вводу (частий випадок для
+        # "Назва товару (код)" чи довгих адрес відділень) --
+        measure_font = tkfont.Font(font=self._font) if self._font else tkfont.Font()
+        longest_px = max((measure_font.measure(label) for label, _ in results), default=0)
+        entry_w = self.entry.winfo_width()
+        w = min(max(entry_w, longest_px + 36, 220), 560)
+        row_px_height = measure_font.metrics("linespace") + 12
+
         x = self.entry.winfo_rootx()
         y = self.entry.winfo_rooty() + self.entry.winfo_height()
-        w = max(self.entry.winfo_width(), 150)
-        self.popup.geometry(f"{w}x{min(6, len(results)) * 20}+{x}+{y}")
+        screen_w = self.winfo_screenwidth()
+        if x + w > screen_w:
+            x = max(0, screen_w - w)
+        self.popup.geometry(f"{w}x{row_height * row_px_height}+{x}+{y}")
         self.popup.deiconify()
         self.popup.lift()
 

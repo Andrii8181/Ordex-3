@@ -30,13 +30,30 @@ except ImportError:
 
 def resource_path(*parts):
     """
-    Повертає абсолютний шлях до файлу ресурсу (наприклад, іконки),
-    коректно як при звичайному запуску python main.py, так і всередині
-    зібраного PyInstaller-ом .exe (--onefile розпаковує дані у тимчасову
-    папку, шлях до якої лежить у sys._MEIPASS).
+    Повертає абсолютний шлях до вбудованого РЕСУРСУ програми (наприклад,
+    файлу іконки), коректно як при звичайному запуску python main.py, так
+    і всередині зібраного PyInstaller-ом .exe (--onefile розпаковує дані
+    у тимчасову папку, шлях до якої лежить у sys._MEIPASS). Використовувати
+    лише для файлів, що постачаються РАЗОМ із програмою (тільки читання) —
+    для файлів, які програма сама створює й повинна зберігати між
+    запусками (база даних, заявки), використовуйте persistent_base_dir().
     """
     base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_dir, *parts)
+
+
+def persistent_base_dir():
+    """
+    Повертає папку поруч зі справжнім .exe-файлом — саме туди мають
+    зберігатись файли, які повинні лишатись між запусками програми
+    (згенеровані заявки, бланки ТТН). На відміну від resource_path(),
+    яка навмисно вказує на тимчасову розпаковану папку (та зникає одразу
+    після закриття програми), тут sys.executable дає стабільне
+    розташування самого .exe.
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
 
 
 def enable_windows_dpi_awareness():
@@ -63,7 +80,7 @@ def enable_windows_dpi_awareness():
 CARRIERS = ["Нова Пошта", "САТ", "Делівері", "Самовивіз"]
 DELIVERY_TYPES = [("branch", "На відділення"), ("address", "Адресна доставка")]
 
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "orders")
+OUTPUT_DIR = os.path.join(persistent_base_dir(), "orders")
 
 # -- Єдиний шрифт для всієї програми: чіткий, без розмиття --
 FONT = ("Segoe UI", 11)
@@ -668,6 +685,7 @@ class App(tk.Tk):
             if not method_var.get().strip() or not phone_var.get().strip():
                 messagebox.showwarning("Увага", "Вкажіть спосіб оплати і телефон.")
                 return
+            phone_normalized = db.format_phone_display(phone_var.get().strip())
             extra = {}
             if carrier_var.get():
                 extra = {
@@ -676,7 +694,7 @@ class App(tk.Tk):
                 if carrier_var.get() == "Нова Пошта":
                     extra["sender_counterparty_ref"] = sender_cp_ref_var.get().strip()
                     extra["sender_contact_ref"] = sender_contact_ref_var.get().strip()
-            db.set_sender(method_var.get().strip(), phone_var.get().strip(),
+            db.set_sender(method_var.get().strip(), phone_normalized,
                            sender_name_var.get().strip() or None,
                            carrier_var.get().strip() or None,
                            api_key_var.get().strip() or None, extra)
@@ -813,7 +831,9 @@ class App(tk.Tk):
 
         tk.Label(left, text="Телефон відправника:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
         self.sender_phone_var = tk.StringVar()
-        tk.Entry(left, textvariable=self.sender_phone_var, width=32, font=FONT).grid(row=r, column=1, sticky="w")
+        sender_phone_entry_widget = tk.Entry(left, textvariable=self.sender_phone_var, width=32, font=FONT)
+        sender_phone_entry_widget.grid(row=r, column=1, sticky="w")
+        sender_phone_entry_widget.bind("<FocusOut>", self._on_sender_phone_focus_out)
         r += 1
 
         tk.Label(left, text="Ім'я відправника (для ТТН):", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
@@ -843,6 +863,7 @@ class App(tk.Tk):
             width=30, font=FONT
         )
         self.recipient_phone_entry.grid(row=r2, column=1, sticky="w")
+        self.recipient_phone_entry.entry.bind("<FocusOut>", self._on_recipient_phone_focus_out)
         r2 += 1
 
         tk.Label(right, text="Покупець:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
@@ -1009,14 +1030,14 @@ class App(tk.Tk):
         tk.Label(add_frame, text="Товар:", font=FONT).grid(row=0, column=0, padx=4, pady=8, sticky="w")
         self.product_entry = AutocompleteEntry(
             add_frame, search_fn=self._search_products_fn, on_select=self._on_product_selected,
-            width=26, font=FONT
+            width=38, font=FONT
         )
         self.product_entry.grid(row=0, column=1, padx=4)
 
         tk.Label(add_frame, text="Код:", font=FONT).grid(row=0, column=2, padx=4)
         self.item_code_entry = AutocompleteEntry(
             add_frame, search_fn=self._search_products_by_code_fn,
-            on_select=self._on_product_code_selected, width=13, font=FONT
+            on_select=self._on_product_code_selected, width=20, font=FONT
         )
         self.item_code_entry.grid(row=0, column=3, padx=4)
 
@@ -1279,7 +1300,7 @@ class App(tk.Tk):
     def _on_client_selected(self, label, client):
         self.selected_client = client
         self.buyer_address_var.set(client.get("address") or "")
-        self.recipient_phone_entry.set(client.get("phone") or "")
+        self.recipient_phone_entry.set(db.format_phone_display(client.get("phone") or ""))
         if not self.buyer_entry.get().strip():
             self.buyer_entry.set(client.get("full_name") or "")
         self.oblast_entry.set(client.get("oblast") or "")
@@ -1304,11 +1325,24 @@ class App(tk.Tk):
         if buyer_name and not self.recipient_name_var.get().strip():
             self.recipient_name_var.set(buyer_name)
 
+    def _on_sender_phone_focus_out(self, event=None):
+        """Телефон відправника завжди приводимо до вигляду +380XXXXXXXXX —
+        саме такий формат вимагають перевізники для ТТН."""
+        value = self.sender_phone_var.get().strip()
+        if value:
+            self.sender_phone_var.set(db.format_phone_display(value))
+
+    def _on_recipient_phone_focus_out(self, event=None):
+        """Те саме для телефону одержувача."""
+        value = self.recipient_phone_entry.get().strip()
+        if value:
+            self.recipient_phone_entry.set(db.format_phone_display(value))
+
     def _on_payment_selected(self, event=None):
         method = self.payment_var.get()
         sender = db.get_sender(method)
         if sender:
-            self.sender_phone_var.set(sender.get("phone") or "")
+            self.sender_phone_var.set(db.format_phone_display(sender.get("phone") or ""))
             self.sender_name_var.set(sender.get("sender_name") or "")
             if sender.get("carrier"):
                 self.carrier_var.set(sender["carrier"])
@@ -1398,6 +1432,14 @@ class App(tk.Tk):
         carrier = self.carrier_var.get()
         delivery_type = self.delivery_type_var.get() if carrier != "Самовивіз" else ""
 
+        # телефони завжди приводимо до єдиного вигляду +380XXXXXXXXX
+        recipient_phone = db.format_phone_display(self.recipient_phone_entry.get().strip())
+        sender_phone = db.format_phone_display(self.sender_phone_var.get().strip())
+        if recipient_phone:
+            self.recipient_phone_entry.set(recipient_phone)
+        if sender_phone:
+            self.sender_phone_var.set(sender_phone)
+
         address_parts = [p for p in [oblast, city] if p]
         if delivery_type == "address":
             street_part = self.street_var.get().strip()
@@ -1415,7 +1457,7 @@ class App(tk.Tk):
 
         client_id = db.upsert_client(
             full_name=buyer_name,
-            phone=self.recipient_phone_entry.get().strip() or None,
+            phone=recipient_phone or None,
             oblast=oblast or None,
             city=city or None,
             address=recipient_address or None,
@@ -1450,9 +1492,9 @@ class App(tk.Tk):
             "buyer_address": recipient_address,
             "responsible": self.responsible_var.get().strip() or "ЧСМ",
             "payment_method": self.payment_var.get().strip(),
-            "sender_phone": self.sender_phone_var.get().strip(),
+            "sender_phone": sender_phone,
             "sender_name": self.sender_name_var.get().strip(),
-            "recipient_phone": self.recipient_phone_entry.get().strip(),
+            "recipient_phone": recipient_phone,
             "carrier": carrier,
             "carrier_branch": self.carrier_branch_entry.get().strip() if delivery_type == "branch" else "",
             "delivery_type": delivery_type,
