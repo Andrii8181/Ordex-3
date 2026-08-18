@@ -324,7 +324,7 @@ class App(tk.Tk):
     # Верхня панель: Файл / Налаштування / Звіти
     # ------------------------------------------------------------------
     def _build_topbar(self):
-        topbar = tk.Frame(self, bg=COLOR_TOPBAR, height=48)
+        topbar = tk.Frame(self, bg=COLOR_TOPBAR, height=54)
         topbar.pack(fill="x", side="top")
         topbar.pack_propagate(False)
 
@@ -336,13 +336,17 @@ class App(tk.Tk):
         if os.path.exists(png_path):
             try:
                 img = tk.PhotoImage(file=png_path)
-                # 256px джерело -> ~29px у топбарі (subsample приймає лише цілий коефіцієнт)
-                self._logo_img = img.subsample(9, 9)
+                # 256px джерело -> ~42px у топбарі (subsample приймає лише цілий коефіцієнт)
+                self._logo_img = img.subsample(6, 6)
                 tk.Label(brand, image=self._logo_img, bg=COLOR_TOPBAR).pack(side="left")
             except tk.TclError:
                 pass
-        tk.Label(brand, text="Ordex", bg=COLOR_TOPBAR, fg="white",
+        # назва "Ordex" з останньою буквою "X" — велика, курсивна, кольором
+        # логотипа, як окремий акцент
+        tk.Label(brand, text="Orde", bg=COLOR_TOPBAR, fg="white",
                  font=("Segoe UI", 15, "bold")).pack(side="left", padx=(8, 0))
+        tk.Label(brand, text="X", bg=COLOR_TOPBAR, fg=COLOR_ACCENT,
+                 font=("Segoe UI", 16, "bold italic")).pack(side="left")
 
         self._topbar_buttons = {}
 
