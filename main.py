@@ -9,7 +9,7 @@ import sys
 import json
 import threading
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, filedialog, simpledialog
 from datetime import datetime, date, timedelta
 
 import db
@@ -207,6 +207,14 @@ class App(tk.Tk):
             btn.pack(fill="x", padx=8, pady=(16, 2) if label == SIDEBAR_ITEMS[0][1] else (2, 2))
             self.sidebar_buttons[key] = btn
 
+        # -- невелика кнопка "Про розробника" внизу бокового меню --
+        about_btn = tk.Button(sidebar, text="Про розробника", anchor="w", relief="flat",
+                               bg=COLOR_SIDEBAR, fg="#8FA3B0",
+                               activebackground=COLOR_SIDEBAR_ACTIVE, activeforeground="white",
+                               font=FONT_SMALL, bd=0, cursor="hand2",
+                               padx=16, pady=8, command=self._show_about_dialog)
+        about_btn.pack(side="bottom", fill="x", padx=8, pady=(2, 12))
+
         self.content = tk.Frame(container, bg=COLOR_BG)
         self.content.pack(side="left", fill="both", expand=True)
 
@@ -394,14 +402,14 @@ class App(tk.Tk):
             try:
                 eff_date = datetime.strptime(eff_date_str.strip(), "%d.%m.%Y").date()
             except ValueError:
-                messagebox.showerror("Помилка", "Невірний формат дати. Використайте ДД.ММ.РРРР.")
+                self._error("Помилка", "Невірний формат дати. Використайте ДД.ММ.РРРР.")
                 return
         else:
             eff_date = date.today()
 
         rows, warnings = price_import.read_price_list(path)
         if not rows:
-            messagebox.showerror("Помилка", "Не вдалось прочитати жодного товару з файлу.\n"
+            self._error("Помилка", "Не вдалось прочитати жодного товару з файлу.\n"
                                   + "\n".join(warnings))
             return
 
@@ -410,7 +418,99 @@ class App(tk.Tk):
         msg = f"Імпортовано {len(rows)} позицій. Ціни діють з {eff_date.strftime('%d.%m.%Y')}."
         if warnings:
             msg += "\n\nПопередження:\n" + "\n".join(warnings)
-        messagebox.showinfo("Готово", msg)
+        self._info("Готово", msg)
+
+    def _custom_dialog(self, title, message, kind="info", buttons="ok"):
+        """
+        Власне спливаюче вікно замість стандартного messagebox — виконує
+        ту саму роль (інформація/попередження/помилка/питання так/ні), але
+        без системного звукового сигналу Windows, який іде разом зі
+        стандартними messagebox-вікнами і набридає при частому використанні.
+
+        kind: "info" | "warning" | "error" | "question"
+        buttons: "ok" | "yesno"
+        Повертає True/False для варіанту "yesno", None для "ok".
+        """
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.configure(bg=COLOR_BG)
+        win.transient(self)
+        win.resizable(False, False)
+        win.grab_set()
+
+        icon_map = {
+            "info": ("ℹ", COLOR_ACCENT_DARK),
+            "warning": ("⚠", "#B8860B"),
+            "error": ("✕", "#C0392B"),
+            "question": ("?", COLOR_ACCENT_DARK),
+        }
+        icon_char, icon_color = icon_map.get(kind, icon_map["info"])
+
+        wrap = tk.Frame(win, bg=COLOR_BG, padx=20, pady=16)
+        wrap.pack(fill="both", expand=True)
+
+        header = tk.Frame(wrap, bg=COLOR_BG)
+        header.pack(fill="x")
+        tk.Label(header, text=icon_char, font=("Segoe UI", 22, "bold"), bg=COLOR_BG,
+                 fg=icon_color).pack(side="left", padx=(0, 14), anchor="n")
+        tk.Label(header, text=message, font=FONT, bg=COLOR_BG, fg=COLOR_TEXT,
+                 wraplength=380, justify="left").pack(side="left", fill="both", expand=True)
+
+        result = {"value": None}
+
+        def close(value):
+            result["value"] = value
+            win.destroy()
+
+        btn_row = tk.Frame(wrap, bg=COLOR_BG)
+        btn_row.pack(fill="x", pady=(18, 0))
+
+        if buttons == "yesno":
+            tk.Button(btn_row, text="Так", font=FONT, bg=COLOR_ACCENT, fg="white",
+                      activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                      relief="flat", padx=16, pady=6, cursor="hand2",
+                      command=lambda: close(True)).pack(side="right", padx=(8, 0))
+            tk.Button(btn_row, text="Ні", font=FONT, bg="#ECEFF1", fg=COLOR_TEXT,
+                      relief="flat", padx=16, pady=6, cursor="hand2",
+                      command=lambda: close(False)).pack(side="right")
+        else:
+            tk.Button(btn_row, text="OK", font=FONT, bg=COLOR_ACCENT, fg="white",
+                      activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                      relief="flat", padx=22, pady=6, cursor="hand2",
+                      command=lambda: close(None)).pack(side="right")
+
+        win.protocol("WM_DELETE_WINDOW", lambda: close(False if buttons == "yesno" else None))
+        win.update_idletasks()
+        req_w = max(win.winfo_reqwidth(), 380)
+        req_h = win.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - req_w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - req_h) // 2
+        win.geometry(f"{req_w}x{req_h}+{max(x, 0)}+{max(y, 0)}")
+        win.wait_window()
+        return result["value"]
+
+    def _info(self, title, message):
+        self._custom_dialog(title, message, kind="info", buttons="ok")
+
+    def _warn(self, title, message):
+        self._custom_dialog(title, message, kind="warning", buttons="ok")
+
+    def _error(self, title, message):
+        self._custom_dialog(title, message, kind="error", buttons="ok")
+
+    def _ask_yes_no(self, title, message):
+        return bool(self._custom_dialog(title, message, kind="question", buttons="yesno"))
+
+    def _show_about_dialog(self):
+        current_year = date.today().year
+        message = (
+            "Ordex — платформа для замовлень та звітів\n\n"
+            "Розробник: Чаплоуцький Андрій Миколайович\n"
+            "м. Умань, Україна\n"
+            "andrii_ch@ukr.net\n\n"
+            f"© {current_year} Ordex. Усі права захищені."
+        )
+        self._info("Про розробника", message)
 
     def _senders_dialog(self):
         """
@@ -486,7 +586,7 @@ class App(tk.Tk):
         def lookup_sender_by_phone():
             phone = phone_var.get().strip()
             if not phone:
-                messagebox.showwarning("Увага", "Спочатку вкажіть телефон.")
+                self._warn("Увага", "Спочатку вкажіть телефон.")
                 return
             key = api_key_var.get().strip()
             found_via_np = False
@@ -526,12 +626,12 @@ class App(tk.Tk):
                 self.config(cursor="")
 
             if found_via_np:
-                messagebox.showinfo("Готово", "Дані підтягнуто з Нової Пошти за телефоном.")
+                self._info("Готово", "Дані підтягнуто з Нової Пошти за телефоном.")
             elif local_match:
-                messagebox.showinfo("Готово", "Нова Пошта не знайшла збігу — "
+                self._info("Готово", "Нова Пошта не знайшла збігу — "
                                      "дані підтягнуто з власної бази.")
             else:
-                messagebox.showinfo("Не знайдено", "Не вдалось знайти дані за цим "
+                self._info("Не знайдено", "Не вдалось знайти дані за цим "
                                      "телефоном — введіть їх вручну.")
 
         tk.Button(form, text="Знайти дані за телефоном", font=FONT_SMALL,
@@ -607,7 +707,7 @@ class App(tk.Tk):
         def auto_discover_refs():
             key = api_key_var.get().strip()
             if not key:
-                messagebox.showwarning("Увага", "Спочатку вкажіть API-ключ.")
+                self._warn("Увага", "Спочатку вкажіть API-ключ.")
                 return
             self.config(cursor="watch")
             self.update_idletasks()
@@ -615,12 +715,12 @@ class App(tk.Tk):
                 result = carriers.discover_sender_refs(key)
                 sender_cp_ref_var.set(result["sender_ref"])
                 sender_contact_ref_var.set(result["contact_ref"])
-                messagebox.showinfo(
+                self._info(
                     "Готово",
                     f"Знайдено відправника «{result['name']}» — Ref-и підставлено автоматично."
                 )
             except carriers.CarrierAPIError as e:
-                messagebox.showerror("Не вдалось знайти автоматично", str(e))
+                self._error("Не вдалось знайти автоматично", str(e))
             finally:
                 self.config(cursor="")
 
@@ -687,7 +787,7 @@ class App(tk.Tk):
 
         def save_sender():
             if not method_var.get().strip() or not phone_var.get().strip():
-                messagebox.showwarning("Увага", "Вкажіть спосіб оплати і телефон.")
+                self._warn("Увага", "Вкажіть спосіб оплати і телефон.")
                 return
             phone_normalized = db.format_phone_display(phone_var.get().strip())
             extra = {}
@@ -706,7 +806,7 @@ class App(tk.Tk):
             refresh()
             self._reload_payment_methods()
             self._update_ttn_availability_hint()
-            messagebox.showinfo("Готово", "Відправника збережено.")
+            self._info("Готово", "Відправника збережено.")
 
         def delete_selected():
             sel = tree.selection()
@@ -768,12 +868,12 @@ class App(tk.Tk):
             try:
                 minutes = max(1, int(interval_var.get().strip()))
             except ValueError:
-                messagebox.showerror("Помилка", "Інтервал має бути цілим числом хвилин.")
+                self._error("Помилка", "Інтервал має бути цілим числом хвилин.")
                 return
             db.set_setting("tracking_interval_minutes", minutes)
             db.set_setting("show_notifications", "1" if show_var.get() else "0")
             win.destroy()
-            messagebox.showinfo("Готово", "Налаштування збережено.")
+            self._info("Готово", "Налаштування збережено.")
 
         tk.Button(wrap, text="Зберегти", font=FONT, bg=COLOR_ACCENT, fg="white",
                   activebackground=COLOR_ACCENT_DARK, activeforeground="white",
@@ -821,7 +921,7 @@ class App(tk.Tk):
         r += 1
 
         tk.Label(left, text="Відповідальний, ПІБ:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
-        self.responsible_var = tk.StringVar(value="ЧСМ")
+        self.responsible_var = tk.StringVar(value=db.get_setting("default_responsible", ""))
         tk.Entry(left, textvariable=self.responsible_var, width=32, font=FONT).grid(row=r, column=1, sticky="w")
         r += 1
 
@@ -1092,15 +1192,15 @@ class App(tk.Tk):
                   command=self._remove_selected_item).pack(side="left")
 
         # "Разом" і кнопка формування заявки — в один рядок одразу під
-        # таблицею товарів, а не окремими рядками нижче
+        # таблицею товарів. Підсумок праворуч, кнопка — по центру рядка
         totals_row = tk.Frame(canvas_wrap)
         totals_row.pack(fill="x", padx=14, pady=14)
+        self.totals_label = tk.Label(totals_row, text="Разом: 0.00 грн,  0.00 кг", font=FONT_BOLD)
+        self.totals_label.pack(side="right", anchor="s", pady=(0, 4))
         tk.Button(totals_row, text="Сформувати заявку", bg=COLOR_ACCENT, fg="white",
                   activebackground=COLOR_ACCENT_DARK, activeforeground="white",
                   font=FONT_BOLD, padx=22, pady=10,
-                  command=self._generate_order).pack(side="left")
-        self.totals_label = tk.Label(totals_row, text="Разом: 0.00 грн,  0.00 кг", font=FONT_BOLD)
-        self.totals_label.pack(side="right", anchor="s", pady=(0, 4))
+                  command=self._generate_order).pack(side="left", expand=True)
 
         # -- колесо миші прокручує область під курсором: над формою — форму,
         # над таблицею товарів — саму таблицю (вона виключена через skip) --
@@ -1376,12 +1476,12 @@ class App(tk.Tk):
     def _add_item(self):
         product = self._selected_product
         if not product:
-            messagebox.showwarning("Увага", "Спочатку виберіть товар зі списку.")
+            self._warn("Увага", "Спочатку виберіть товар зі списку.")
             return
         try:
             qty = float(self.item_qty_var.get().replace(",", "."))
         except ValueError:
-            messagebox.showerror("Помилка", "Некоректна кількість.")
+            self._error("Помилка", "Некоректна кількість.")
             return
         price = float(product["price"])
         weight_unit = float(product["weight"]) if product.get("weight") else 0.0
@@ -1425,13 +1525,13 @@ class App(tk.Tk):
     # -- формування заявки --
     def _generate_order(self):
         if not self.order_number_var.get().strip():
-            messagebox.showwarning("Увага", "Вкажіть номер заявки.")
+            self._warn("Увага", "Вкажіть номер заявки.")
             return
         if not self.buyer_entry.get().strip():
-            messagebox.showwarning("Увага", "Вкажіть покупця.")
+            self._warn("Увага", "Вкажіть покупця.")
             return
         if not self.current_items:
-            messagebox.showwarning("Увага", "Додайте хоча б один товар.")
+            self._warn("Увага", "Додайте хоча б один товар.")
             return
 
         buyer_name = self.buyer_entry.get().strip()
@@ -1479,7 +1579,7 @@ class App(tk.Tk):
         try:
             seats_amount = max(1, int(self.seats_amount_var.get().strip() or "1"))
         except ValueError:
-            messagebox.showerror("Помилка", "Кількість місць має бути цілим числом.")
+            self._error("Помилка", "Кількість місць має бути цілим числом.")
             return
 
         cod_amount = None
@@ -1487,7 +1587,7 @@ class App(tk.Tk):
             try:
                 cod_amount = float(self.cod_amount_var.get().strip().replace(",", "."))
             except ValueError:
-                messagebox.showerror("Помилка", "Вкажіть суму накладеного платежу числом.")
+                self._error("Помилка", "Вкажіть суму накладеного платежу числом.")
                 return
 
         db.remember_city(oblast, city)
@@ -1498,7 +1598,7 @@ class App(tk.Tk):
             "order_date": datetime(order_date.year, order_date.month, order_date.day),
             "buyer_name": buyer_name,
             "buyer_address": recipient_address,
-            "responsible": self.responsible_var.get().strip() or "ЧСМ",
+            "responsible": self.responsible_var.get().strip(),
             "payment_method": self.payment_var.get().strip(),
             "sender_phone": sender_phone,
             "sender_name": self.sender_name_var.get().strip(),
@@ -1591,7 +1691,7 @@ class App(tk.Tk):
                     reason_text = str(e)
                 else:
                     reason_text = f"Технічна помилка в програмі: {e}"
-                messagebox.showwarning(
+                self._warn(
                     "ТТН не створено",
                     f"Заявку буде сформовано без ТТН. Причина:\n\n{reason_text}\n\n"
                     f"Ви можете створити ТТН вручну на сайті перевізника і "
@@ -1604,10 +1704,16 @@ class App(tk.Tk):
 
         db.save_order(header, self.current_items, filename)
 
+        # запам'ятовуємо відповідальну особу — при першому формуванні
+        # заявки користувач вписує її сам, а надалі програма підставляє
+        # це значення за замовчуванням
+        if header.get("responsible"):
+            db.set_setting("default_responsible", header["responsible"])
+
         if header.get("ttn"):
-            messagebox.showinfo("Готово", f"Заявку збережено:\n{output_path}\n\n№ ТТН: {header['ttn']}")
+            self._info("Готово", f"Заявку збережено:\n{output_path}\n\n№ ТТН: {header['ttn']}")
         else:
-            messagebox.showinfo("Готово", f"Заявку збережено:\n{output_path}")
+            self._info("Готово", f"Заявку збережено:\n{output_path}")
         self._reset_order_form()
 
     def _reset_order_form(self):
@@ -1901,7 +2007,7 @@ class App(tk.Tk):
     def _cancel_selected_ttn(self):
         sel = self.history_tree.selection()
         if not sel:
-            messagebox.showwarning("Увага", "Виберіть заявку в списку.")
+            self._warn("Увага", "Виберіть заявку в списку.")
             return
         self._cancel_ttn_for_order(int(sel[0]))
 
@@ -1927,13 +2033,13 @@ class App(tk.Tk):
         if not order:
             return
         if not order.get("ttn"):
-            messagebox.showinfo("Немає ТТН", "У цієї заявки немає створеного ТТН.")
+            self._info("Немає ТТН", "У цієї заявки немає створеного ТТН.")
             return
         if order.get("ttn_status") == "cancelled":
-            messagebox.showinfo("Вже скасовано", "ТТН цієї заявки вже позначено як скасований.")
+            self._info("Вже скасовано", "ТТН цієї заявки вже позначено як скасований.")
             return
 
-        confirm = messagebox.askyesno(
+        confirm = self._ask_yes_no(
             "Скасувати ТТН?",
             f"Скасувати ТТН №{order['ttn']} для заявки №{order['order_number']}?\n\n"
             f"Сама заявка залишиться в історії — скасовується лише накладна "
@@ -1948,9 +2054,9 @@ class App(tk.Tk):
         ok, err = self._perform_ttn_cancel(order)
         self.config(cursor="")
         if ok:
-            messagebox.showinfo("Готово", f"ТТН №{order['ttn']} скасовано.")
+            self._info("Готово", f"ТТН №{order['ttn']} скасовано.")
         else:
-            messagebox.showerror(
+            self._error(
                 "Не вдалось скасувати",
                 f"{err}\n\nЯкщо посилку вже прийняв перевізник, скасувати ТТН "
                 f"можна лише через його підтримку або кабінет."
@@ -1962,7 +2068,7 @@ class App(tk.Tk):
     def _cancel_selected_order(self):
         sel = self.history_tree.selection()
         if not sel:
-            messagebox.showwarning("Увага", "Виберіть заявку в списку.")
+            self._warn("Увага", "Виберіть заявку в списку.")
             return
         self._cancel_order_for_order(int(sel[0]))
 
@@ -1974,7 +2080,7 @@ class App(tk.Tk):
         has_active_ttn = bool(order.get("ttn")) and order.get("ttn_status") != "cancelled"
         extra_warning = (" Перед видаленням буде автоматично скасовано її ТТН."
                           if has_active_ttn else "")
-        confirm = messagebox.askyesno(
+        confirm = self._ask_yes_no(
             "Видалити заявку?",
             f"Видалити заявку №{order['order_number']} (створена помилково)?"
             f"{extra_warning}\n\n"
@@ -1998,7 +2104,7 @@ class App(tk.Tk):
                             f"все одно буде видалено з історії.")
         db.delete_order(order_id)
         self.config(cursor="")
-        messagebox.showinfo("Готово", f"Заявку №{order['order_number']} видалено.{ttn_note}")
+        self._info("Готово", f"Заявку №{order['order_number']} видалено.{ttn_note}")
         self._refresh_history()
         if refresh_dialog_callback:
             refresh_dialog_callback()
@@ -2015,13 +2121,13 @@ class App(tk.Tk):
                 subprocess.run(["xdg-open", path], check=False)
             return True
         except Exception as e:
-            messagebox.showerror("Не вдалось відкрити файл", str(e))
+            self._error("Не вдалось відкрити файл", str(e))
             return False
 
     def _open_order_details_from_selection(self):
         sel = self.history_tree.selection()
         if not sel:
-            messagebox.showwarning("Увага", "Виберіть заявку в списку.")
+            self._warn("Увага", "Виберіть заявку в списку.")
             return
         self._open_order_details(int(sel[0]))
 
@@ -2138,7 +2244,7 @@ class App(tk.Tk):
                     return
                 sender = db.get_sender(order.get("payment_method") or "")
                 if not sender or sender.get("carrier") != order.get("carrier") or not sender.get("api_key"):
-                    messagebox.showerror("Не вдалось", "Немає доступного API-ключа для цього "
+                    self._error("Не вдалось", "Немає доступного API-ключа для цього "
                                           "відправника, щоб довантажити бланк.")
                     return
                 self.config(cursor="watch")
@@ -2153,7 +2259,7 @@ class App(tk.Tk):
                     order["ttn_pdf_path"] = new_path
                     self._open_file_externally(new_path)
                 except carriers.CarrierAPIError as e:
-                    messagebox.showerror("Не вдалось завантажити бланк", str(e))
+                    self._error("Не вдалось завантажити бланк", str(e))
                 finally:
                     self.config(cursor="")
 
@@ -2182,7 +2288,7 @@ class App(tk.Tk):
                   cursor="hand2",
                   command=lambda: self._open_file_externally(order_file_path)
                   if os.path.exists(order_file_path) else
-                  messagebox.showerror("Не знайдено", "Файл заявки не знайдено на диску.")
+                  self._error("Не знайдено", "Файл заявки не знайдено на диску.")
                   ).pack(side="left")
 
         win.update_idletasks()
@@ -2236,7 +2342,7 @@ class App(tk.Tk):
     def _export_clients(self):
         clients = db.list_clients()
         if not clients:
-            messagebox.showinfo("Немає даних", "База клієнтів поки порожня.")
+            self._info("Немає даних", "База клієнтів поки порожня.")
             return
         path = filedialog.asksaveasfilename(
             title="Зберегти базу клієнтів", defaultextension=".xlsx",
@@ -2250,7 +2356,7 @@ class App(tk.Tk):
                  c.get("city") or "", c.get("address") or "", c.get("carrier") or "",
                  c.get("carrier_branch") or "") for c in clients]
         reports.export_table_to_excel(headers, rows, "База клієнтів", path)
-        messagebox.showinfo("Готово", f"Базу клієнтів збережено:\n{path}")
+        self._info("Готово", f"Базу клієнтів збережено:\n{path}")
 
     # ------------------------------------------------------------------
     # "Звіти та аналітика"
@@ -2346,10 +2452,10 @@ class App(tk.Tk):
             date_from = self._parse_date(view.date_from_var.get())
             date_to = self._parse_date(view.date_to_var.get())
         except ValueError:
-            messagebox.showerror("Помилка", "Невірний формат дати. Використайте ДД.ММ.РРРР.")
+            self._error("Помилка", "Невірний формат дати. Використайте ДД.ММ.РРРР.")
             return
         if date_from > date_to:
-            messagebox.showerror("Помилка", "Дата 'з' не може бути пізніше дати 'по'.")
+            self._error("Помилка", "Дата 'з' не може бути пізніше дати 'по'.")
             return
 
         df, dt = date_from.isoformat(), date_to.isoformat()
@@ -2559,7 +2665,7 @@ class App(tk.Tk):
     def _export_report(self, key):
         view = self.views[key]
         if not view.current_rows:
-            messagebox.showwarning("Увага", "Спочатку сформуйте звіт.")
+            self._warn("Увага", "Спочатку сформуйте звіт.")
             return
         path = filedialog.asksaveasfilename(
             title="Зберегти звіт", defaultextension=".xlsx",
@@ -2570,17 +2676,17 @@ class App(tk.Tk):
             return
         reports.export_table_to_excel(view.current_headers, view.current_rows,
                                        self.REPORT_TITLES[key], path)
-        messagebox.showinfo("Готово", f"Звіт збережено:\n{path}")
+        self._info("Готово", f"Звіт збережено:\n{path}")
 
     def _copy_report(self, key):
         view = self.views[key]
         if not view.current_rows:
-            messagebox.showwarning("Увага", "Спочатку сформуйте звіт.")
+            self._warn("Увага", "Спочатку сформуйте звіт.")
             return
         text = reports.table_to_clipboard_text(view.current_headers, view.current_rows)
         self.clipboard_clear()
         self.clipboard_append(text)
-        messagebox.showinfo("Готово", "Таблицю скопійовано в буфер обміну.\n"
+        self._info("Готово", "Таблицю скопійовано в буфер обміну.\n"
                              "Можна вставити прямо в Excel (Ctrl+V).")
 
 

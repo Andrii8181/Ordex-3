@@ -100,10 +100,6 @@ def init_db():
             sender_name TEXT
         )
     """)
-    cur.execute("""
-        INSERT OR IGNORE INTO sender_phones (payment_method, phone)
-        VALUES ('рр ІОМ', '096 356 65 18')
-    """)
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (

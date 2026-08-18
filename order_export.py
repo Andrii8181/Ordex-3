@@ -69,7 +69,7 @@ def generate_order_excel(header, items, output_path):
     merge_set("C4:G4", header.get("sender_phone", ""))
 
     merge_set("A5:B5", "Відповідальний, ПІБ")
-    merge_set("C5:D5", header.get("responsible", "ЧСМ"))
+    merge_set("C5:D5", header.get("responsible", ""))
     ws["E5"] = "опл"
     merge_set("F5:G5", header.get("payment_method", ""))
 
