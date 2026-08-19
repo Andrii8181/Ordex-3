@@ -1195,19 +1195,26 @@ class App(tk.Tk):
 
         tk.Label(add_frame, text="Ціна:", font=FONT).grid(row=0, column=4, padx=4)
         self.item_price_var = tk.StringVar()
-        tk.Entry(add_frame, textvariable=self.item_price_var, width=8, font=FONT, state="readonly").grid(row=0, column=5)
+        tk.Entry(add_frame, textvariable=self.item_price_var, width=8, font=FONT).grid(row=0, column=5)
 
         tk.Label(add_frame, text="Вага/од:", font=FONT).grid(row=0, column=6, padx=4)
         self.item_weight_var = tk.StringVar()
-        tk.Entry(add_frame, textvariable=self.item_weight_var, width=8, font=FONT, state="readonly").grid(row=0, column=7)
+        tk.Entry(add_frame, textvariable=self.item_weight_var, width=8, font=FONT).grid(row=0, column=7)
 
-        tk.Label(add_frame, text="К-сть:", font=FONT).grid(row=0, column=8, padx=4)
+        tk.Label(add_frame, text="Од.вим:", font=FONT).grid(row=0, column=8, padx=4)
+        self.item_unit_var = tk.StringVar()
+        tk.Entry(add_frame, textvariable=self.item_unit_var, width=6, font=FONT).grid(row=0, column=9)
+
+        tk.Label(add_frame, text="К-сть:", font=FONT).grid(row=0, column=10, padx=4)
         self.item_qty_var = tk.StringVar(value="1")
-        tk.Entry(add_frame, textvariable=self.item_qty_var, width=6, font=FONT).grid(row=0, column=9)
+        tk.Entry(add_frame, textvariable=self.item_qty_var, width=6, font=FONT).grid(row=0, column=11)
 
         tk.Button(add_frame, text="+", width=3, font=FONT_BOLD, bg=COLOR_ACCENT, fg="white",
                   activebackground=COLOR_ACCENT_DARK, activeforeground="white",
-                  command=self._add_item).grid(row=0, column=10, padx=8)
+                  command=self._add_item).grid(row=0, column=12, padx=8)
+        tk.Label(add_frame, text="Якщо товару немає в прайсі — впишіть назву,\n"
+                                  "ціну і вагу вручну.", font=FONT_SMALL,
+                 fg=COLOR_TEXT_MUTED).grid(row=1, column=0, columnspan=8, sticky="w", padx=4, pady=(2, 6))
 
         # -- таблиця товарів (з вертикальною прокруткою — заявка може мати
         # багато позицій) --
@@ -1283,6 +1290,14 @@ class App(tk.Tk):
             self.street_entry.configure(state="disabled")
             self.building_entry.configure(state="disabled")
             self.apartment_entry.configure(state="disabled")
+            # самовивіз означає, що клієнт забирає товар особисто з
+            # власного складу/офісу — за замовчуванням це Черкаська
+            # область, м. Умань (якщо поля ще порожні — не переписуємо
+            # те, що вже вписано вручну)
+            if not self.oblast_entry.get().strip():
+                self.oblast_entry.set("Черкаська область")
+            if not self.city_entry.get().strip():
+                self.city_entry.set("Умань")
             return
 
         delivery_type = self.delivery_type_var.get()
@@ -1403,15 +1418,30 @@ class App(tk.Tk):
         if prefix:
             warehouses = [w for w in warehouses
                           if prefix in w["number"].lower() or prefix in w["description"].lower()]
-        return [(f"№{w['number']} — {w['description']}", w["number"]) for w in warehouses[:15]]
+        results = []
+        for w in warehouses[:15]:
+            label = f"№{w['number']} — {w['description']}"
+            if w.get("max_weight"):
+                label += f" (до {w['max_weight']} кг)"
+            results.append((label, w["number"]))
+        return results
 
     def _on_recipient_warehouse_selected(self, label, number):
         self.carrier_branch_entry.set(str(number))
 
     def _get_np_api_key_for_current_sender(self):
+        # спершу пробуємо відправника, обраного в "Спосіб оплати" —
+        # якщо він налаштований на Нову Пошту з ключем
         sender = db.get_sender(self.payment_var.get().strip())
         if sender and sender.get("carrier") == "Нова Пошта" and sender.get("api_key"):
             return sender["api_key"]
+        # довідник відділень — спільний для всіх, не прив'язаний до
+        # конкретного відправника, тож якщо спосіб оплати ще не обрано
+        # (наприклад, форму заповнюють не по порядку) — бере перший-ліпший
+        # налаштований ключ Нової Пошти, аби підказки все одно працювали
+        for s in db.get_senders():
+            if s.get("carrier") == "Нова Пошта" and s.get("api_key"):
+                return s["api_key"]
         return None
 
     def _start_warehouse_fetch(self, city):
@@ -1426,15 +1456,22 @@ class App(tk.Tk):
         def worker():
             try:
                 result = carriers.get_warehouses_for_city(api_key, city)
+                failed = False
             except carriers.CarrierAPIError:
                 result = []
-            self.after(0, lambda: self._apply_warehouse_fetch_result(cache_key, result))
+                failed = True
+            self.after(0, lambda: self._apply_warehouse_fetch_result(cache_key, result, failed))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _apply_warehouse_fetch_result(self, cache_key, result):
-        self._warehouse_cache[cache_key] = result
+    def _apply_warehouse_fetch_result(self, cache_key, result, failed=False):
         self._warehouse_fetch_in_progress.discard(cache_key)
+        if failed:
+            # не кешуємо невдачу (тимчасовий збій мережі тощо) — щоб
+            # наступна натиснута клавіша спробувала запит ще раз, а не
+            # лишала підказки вимкненими до кінця сеансу
+            return
+        self._warehouse_cache[cache_key] = result
         # якщо користувач усе ще друкує в полі відділення — одразу
         # перепоказати підказки, тепер уже з довантаженими даними
         if self.focus_get() == self.carrier_branch_entry.entry:
@@ -1513,30 +1550,47 @@ class App(tk.Tk):
         self.item_code_entry.set(product.get("code") or "")
         self.item_price_var.set(str(product.get("price") or ""))
         self.item_weight_var.set(str(product.get("weight") or ""))
+        self.item_unit_var.set(product.get("unit") or "")
 
     def _on_product_code_selected(self, label, product):
         self._selected_product = product
         self.product_entry.set(product.get("name") or "")
         self.item_price_var.set(str(product.get("price") or ""))
         self.item_weight_var.set(str(product.get("weight") or ""))
+        self.item_unit_var.set(product.get("unit") or "")
 
     # -- товарні рядки --
     def _add_item(self):
-        product = self._selected_product
-        if not product:
-            self._warn("Увага", "Спочатку виберіть товар зі списку.")
+        name = self.product_entry.get().strip()
+        if not name:
+            self._warn("Увага", "Вкажіть назву товару.")
             return
         try:
             qty = float(self.item_qty_var.get().replace(",", "."))
         except ValueError:
             self._error("Помилка", "Некоректна кількість.")
             return
-        price = float(product["price"])
-        weight_unit = float(product["weight"]) if product.get("weight") else 0.0
+        price_raw = self.item_price_var.get().strip().replace(",", ".")
+        if not price_raw:
+            self._warn("Увага", "Вкажіть ціну товару — якщо його немає в "
+                                 "прайсі, впишіть ціну вручну.")
+            return
+        try:
+            price = float(price_raw)
+        except ValueError:
+            self._error("Помилка", "Некоректна ціна.")
+            return
+        weight_raw = self.item_weight_var.get().strip().replace(",", ".")
+        try:
+            weight_unit = float(weight_raw) if weight_raw else 0.0
+        except ValueError:
+            self._error("Помилка", "Некоректна вага.")
+            return
+
         item = {
-            "code": product.get("code") or "",
-            "name": product["name"],
-            "unit": product.get("unit") or "",
+            "code": self.item_code_entry.get().strip(),
+            "name": name,
+            "unit": self.item_unit_var.get().strip(),
             "qty": qty,
             "price": price,
             "sum": round(qty * price, 2),
@@ -1552,6 +1606,7 @@ class App(tk.Tk):
         self.item_code_entry.set("")
         self.item_price_var.set("")
         self.item_weight_var.set("")
+        self.item_unit_var.set("")
         self.item_qty_var.set("1")
         self._selected_product = None
         self._update_totals()

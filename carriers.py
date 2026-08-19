@@ -475,8 +475,10 @@ def fetch_ttn_pdf(ttn_ref, api_key):
 def get_warehouses_for_city(api_key, city_name):
     """
     Повертає список відділень заданого міста: [{"number": "5", "description":
-    "Відділення №5: ...", "ref": "..."}] — для автодоповнення номера
-    відділення одержувача прямо з довідника Нової Пошти.
+    "Відділення №5: ...", "ref": "...", "max_weight": "30"}] — для
+    автодоповнення номера відділення одержувача прямо з довідника Нової
+    Пошти, разом з адресою (вона вже входить у description) і допустимою
+    вагою відправлення для цього відділення.
     Кидає CarrierAPIError, якщо не вдалось (немає ключа, місто не знайдено).
     """
     if not REQUESTS_AVAILABLE:
@@ -487,6 +489,6 @@ def get_warehouses_for_city(api_key, city_name):
     data = _np_request(api_key, "AddressGeneral", "getWarehouses", {"CityRef": city_ref})
     return [
         {"number": str(w.get("Number") or ""), "description": w.get("Description") or "",
-         "ref": w.get("Ref")}
+         "ref": w.get("Ref"), "max_weight": str(w.get("TotalMaxWeight") or "").strip()}
         for w in (data or [])
     ]
