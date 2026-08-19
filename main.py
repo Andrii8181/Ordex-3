@@ -503,14 +503,42 @@ class App(tk.Tk):
 
     def _show_about_dialog(self):
         current_year = date.today().year
-        message = (
-            "Ordex — платформа для замовлень та звітів\n\n"
-            "Розробник: Чаплоуцький Андрій Миколайович\n"
-            "м. Умань, Україна\n"
-            "andrii_ch@ukr.net\n\n"
-            f"© {current_year} Ordex. Усі права захищені."
-        )
-        self._info("Про розробника", message)
+
+        win = tk.Toplevel(self)
+        win.title("Про розробника")
+        win.configure(bg=COLOR_BG)
+        win.transient(self)
+        win.resizable(False, False)
+        win.grab_set()
+
+        wrap = tk.Frame(win, bg=COLOR_BG, padx=30, pady=24)
+        wrap.pack(fill="both", expand=True)
+
+        tk.Label(wrap, text="Ordex", font=("Segoe UI", 18, "bold"),
+                 bg=COLOR_BG, fg=COLOR_ACCENT_DARK, justify="center").pack()
+        tk.Label(wrap, text="платформа для замовлень та звітів", font=FONT_SMALL,
+                 bg=COLOR_BG, fg=COLOR_TEXT_MUTED, justify="center").pack(pady=(0, 16))
+
+        for line in ("Розробник: Чаплоуцький Андрій Миколайович",
+                     "м. Умань, Україна", "andrii_ch@ukr.net"):
+            tk.Label(wrap, text=line, font=FONT, bg=COLOR_BG, fg=COLOR_TEXT,
+                     justify="center").pack(pady=1)
+
+        tk.Label(wrap, text=f"© {current_year} Ordex. Усі права захищені.",
+                 font=FONT_SMALL, bg=COLOR_BG, fg=COLOR_TEXT_MUTED,
+                 justify="center").pack(pady=(16, 0))
+
+        tk.Button(wrap, text="OK", font=FONT, bg=COLOR_ACCENT, fg="white",
+                  activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                  relief="flat", padx=22, pady=6, cursor="hand2",
+                  command=win.destroy).pack(pady=(20, 0))
+
+        win.update_idletasks()
+        req_w = max(win.winfo_reqwidth(), 360)
+        req_h = win.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - req_w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - req_h) // 2
+        win.geometry(f"{req_w}x{req_h}+{max(x, 0)}+{max(y, 0)}")
 
     def _senders_dialog(self):
         """
@@ -525,16 +553,25 @@ class App(tk.Tk):
         win.transient(self)
         win.resizable(False, False)
 
-        wrap = tk.Frame(win, bg=COLOR_BG, padx=16, pady=16)
+        # -- прокручуваний контейнер: якщо вміст (особливо з полями Нової
+        # Пошти) не поміщається по висоті на екрані, з'являється прокрутка
+        # замість того, щоб вікно виростало за межі монітора --
+        scroll_inner, scroll_canvas = self._make_scrollable(win)
+        wrap = tk.Frame(scroll_inner, bg=COLOR_BG, padx=16, pady=16)
         wrap.pack(fill="both", expand=True)
 
         def resize_to_content():
             win.update_idletasks()
-            req_w = max(win.winfo_reqwidth(), 560)
-            req_h = win.winfo_reqheight()
+            req_w = max(wrap.winfo_reqwidth() + 24, 560)
+            req_h = wrap.winfo_reqheight() + 24
+            screen_h = self.winfo_screenheight()
+            max_h = screen_h - 80
+            final_h = min(req_h, max_h)
             x = self.winfo_rootx() + (self.winfo_width() - req_w) // 2
-            y = self.winfo_rooty() + (self.winfo_height() - req_h) // 2
-            win.geometry(f"{req_w}x{req_h}+{max(x, 0)}+{max(y, 0)}")
+            y = max(20, self.winfo_rooty() + (self.winfo_height() - final_h) // 2)
+            win.geometry(f"{req_w}x{final_h}+{max(x, 0)}+{y}")
+
+        self._bind_wheel_deep(scroll_inner, scroll_canvas, skip=set())
 
         tk.Label(wrap, text="Відправники", font=FONT_BOLD,
                  bg=COLOR_BG, fg=COLOR_TEXT).pack(anchor="w", pady=(0, 4))
@@ -704,10 +741,11 @@ class App(tk.Tk):
         tk.Entry(np_frame, textvariable=sender_contact_ref_var, width=40, font=FONT).grid(
             row=2, column=1, sticky="w", padx=(8, 0), pady=3)
 
-        def auto_discover_refs():
+        def auto_discover_refs(silent=False):
             key = api_key_var.get().strip()
             if not key:
-                self._warn("Увага", "Спочатку вкажіть API-ключ.")
+                if not silent:
+                    self._warn("Увага", "Спочатку вкажіть API-ключ.")
                 return
             self.config(cursor="watch")
             self.update_idletasks()
@@ -715,14 +753,25 @@ class App(tk.Tk):
                 result = carriers.discover_sender_refs(key)
                 sender_cp_ref_var.set(result["sender_ref"])
                 sender_contact_ref_var.set(result["contact_ref"])
-                self._info(
-                    "Готово",
-                    f"Знайдено відправника «{result['name']}» — Ref-и підставлено автоматично."
-                )
+                if not silent:
+                    self._info(
+                        "Готово",
+                        f"Знайдено відправника «{result['name']}» — Ref-и підставлено автоматично."
+                    )
             except carriers.CarrierAPIError as e:
-                self._error("Не вдалось знайти автоматично", str(e))
+                if not silent:
+                    self._error("Не вдалось знайти автоматично", str(e))
             finally:
                 self.config(cursor="")
+
+        def on_api_key_focus_out(event=None):
+            # автопідтягування Ref одразу після введення/вставки ключа —
+            # тихо, без спливаючих вікон, щоб не заважати під час набору;
+            # не чіпаємо поля, якщо Ref уже заповнені вручну
+            if carrier_var.get() == "Нова Пошта" and api_key_var.get().strip() \
+                    and not sender_cp_ref_var.get().strip():
+                auto_discover_refs(silent=True)
+        api_key_entry.bind("<FocusOut>", on_api_key_focus_out)
 
         tk.Button(np_frame, text="Отримати Ref автоматично", font=FONT_SMALL,
                   bg="#ECEFF1", fg=COLOR_TEXT, relief="flat", padx=8, pady=3,
@@ -730,12 +779,7 @@ class App(tk.Tk):
             row=3, column=0, columnspan=2, sticky="w", pady=(2, 4))
 
         tk.Label(np_frame,
-                 text="Ref контрагента й контактної особи відправника — це ваші\n"
-                      "ідентифікатори в системі Нової Пошти. Кнопка вище знаходить\n"
-                      "їх автоматично за API-ключем (перший зареєстрований\n"
-                      "відправник на акаунті); якщо не спрацює — їх можна взяти\n"
-                      "в кабінеті my.novaposhta.ua, розділ «Контрагенти».\n"
-                      "Для САТ і Делівері API поки не підключено — досить міста й\n"
+                 text="Для САТ і Делівері API поки не підключено — досить міста й\n"
                       "відділення вище, ТТН для них створюється вручну.",
                  bg=COLOR_BG, fg=COLOR_TEXT_MUTED, font=FONT_SMALL,
                  justify="left").grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
@@ -748,6 +792,10 @@ class App(tk.Tk):
                 common_frame.grid_remove()
             if carrier == "Нова Пошта":
                 np_frame.grid()
+                # якщо ключ уже вписаний раніше (наприклад, перевізника
+                # обрали вже після вставки ключа) — теж спробувати підтягнути
+                if api_key_var.get().strip() and not sender_cp_ref_var.get().strip():
+                    auto_discover_refs(silent=True)
             else:
                 np_frame.grid_remove()
             resize_to_content()
