@@ -951,6 +951,11 @@ class App(tk.Tk):
         left.pack(side="left", fill="both", expand=True, anchor="n")
         right = tk.Frame(top)
         right.pack(side="left", fill="both", expand=True, padx=(28, 0), anchor="n")
+        # колонка з полями вводу розтягується разом з вікном — щоб на
+        # широких екранах поля не лишались вузькими з порожнім простором
+        # праворуч
+        left.columnconfigure(1, weight=1)
+        right.columnconfigure(1, weight=1)
 
         tk.Label(left, text="ВІДПРАВНИК", font=FONT_BOLD, fg=COLOR_ACCENT_DARK,
                  bg=COLOR_BG).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
@@ -961,7 +966,7 @@ class App(tk.Tk):
         r = 1
         tk.Label(left, text="№ заявки:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
         self.order_number_var = tk.StringVar()
-        tk.Entry(left, textvariable=self.order_number_var, width=16, font=FONT).grid(row=r, column=1, sticky="w")
+        tk.Entry(left, textvariable=self.order_number_var, width=16, font=FONT).grid(row=r, column=1, sticky="we")
         r += 1
 
         tk.Label(left, text="Дата створення:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
@@ -970,27 +975,27 @@ class App(tk.Tk):
 
         tk.Label(left, text="Відповідальний, ПІБ:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
         self.responsible_var = tk.StringVar(value=db.get_setting("default_responsible", ""))
-        tk.Entry(left, textvariable=self.responsible_var, width=32, font=FONT).grid(row=r, column=1, sticky="w")
+        tk.Entry(left, textvariable=self.responsible_var, width=32, font=FONT).grid(row=r, column=1, sticky="we")
         r += 1
 
         tk.Label(left, text="Спосіб оплати (опл):", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
         self.payment_var = tk.StringVar()
         self.payment_combo = ttk.Combobox(left, textvariable=self.payment_var, width=28, font=FONT,
                                            values=[s["payment_method"] for s in db.get_senders()])
-        self.payment_combo.grid(row=r, column=1, sticky="w")
+        self.payment_combo.grid(row=r, column=1, sticky="we")
         self.payment_combo.bind("<<ComboboxSelected>>", self._on_payment_selected)
         r += 1
 
         tk.Label(left, text="Телефон відправника:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
         self.sender_phone_var = tk.StringVar()
         sender_phone_entry_widget = tk.Entry(left, textvariable=self.sender_phone_var, width=32, font=FONT)
-        sender_phone_entry_widget.grid(row=r, column=1, sticky="w")
+        sender_phone_entry_widget.grid(row=r, column=1, sticky="we")
         sender_phone_entry_widget.bind("<FocusOut>", self._on_sender_phone_focus_out)
         r += 1
 
         tk.Label(left, text="Ім'я відправника (для ТТН):", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
         self.sender_name_var = tk.StringVar()
-        tk.Entry(left, textvariable=self.sender_name_var, width=32, font=FONT).grid(row=r, column=1, sticky="w")
+        tk.Entry(left, textvariable=self.sender_name_var, width=32, font=FONT).grid(row=r, column=1, sticky="we")
         r += 1
 
         tk.Label(left, text="Відділення відправника:", font=FONT).grid(row=r, column=0, sticky="w", pady=3)
@@ -1014,7 +1019,7 @@ class App(tk.Tk):
             right, search_fn=self._search_clients_by_phone_fn, on_select=self._on_client_selected,
             width=30, font=FONT
         )
-        self.recipient_phone_entry.grid(row=r2, column=1, sticky="w")
+        self.recipient_phone_entry.grid(row=r2, column=1, sticky="we")
         self.recipient_phone_entry.entry.bind("<FocusOut>", self._on_recipient_phone_focus_out)
         r2 += 1
 
@@ -1023,7 +1028,7 @@ class App(tk.Tk):
             right, search_fn=self._search_clients_fn, on_select=self._on_client_selected,
             width=30, font=FONT
         )
-        self.buyer_entry.grid(row=r2, column=1, sticky="w")
+        self.buyer_entry.grid(row=r2, column=1, sticky="we")
         # покупець і одержувач зазвичай одна й та сама особа — якщо поле
         # "Одержувач, ПІБ" ще порожнє, підставляємо туди ім'я покупця
         # (не перезаписуючи, якщо там уже щось вручну вписано)
@@ -1034,7 +1039,7 @@ class App(tk.Tk):
         self.carrier_var = tk.StringVar(value=CARRIERS[0])
         carrier_combo = ttk.Combobox(right, textvariable=self.carrier_var, values=CARRIERS,
                                       width=25, font=FONT, state="readonly")
-        carrier_combo.grid(row=r2, column=1, sticky="w")
+        carrier_combo.grid(row=r2, column=1, sticky="we")
         carrier_combo.bind("<<ComboboxSelected>>", self._on_carrier_changed)
         r2 += 1
 
@@ -1055,7 +1060,7 @@ class App(tk.Tk):
             right, search_fn=self._search_oblasts_fn, on_select=self._on_oblast_selected,
             width=30, font=FONT
         )
-        self.oblast_entry.grid(row=r2, column=1, sticky="w")
+        self.oblast_entry.grid(row=r2, column=1, sticky="we")
         r2 += 1
 
         tk.Label(right, text="Населений пункт:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
@@ -1063,7 +1068,7 @@ class App(tk.Tk):
             right, search_fn=self._search_cities_fn, on_select=lambda l, p: None,
             width=30, font=FONT
         )
-        self.city_entry.grid(row=r2, column=1, sticky="w")
+        self.city_entry.grid(row=r2, column=1, sticky="we")
         r2 += 1
 
         tk.Label(right, text="№ відділення:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
@@ -1071,13 +1076,13 @@ class App(tk.Tk):
             right, search_fn=self._search_recipient_warehouses_fn,
             on_select=self._on_recipient_warehouse_selected, width=32, font=FONT
         )
-        self.carrier_branch_entry.grid(row=r2, column=1, sticky="w")
+        self.carrier_branch_entry.grid(row=r2, column=1, sticky="we")
         r2 += 1
 
         tk.Label(right, text="Вулиця:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
         self.street_var = tk.StringVar()
         self.street_entry = tk.Entry(right, textvariable=self.street_var, width=32, font=FONT)
-        self.street_entry.grid(row=r2, column=1, sticky="w")
+        self.street_entry.grid(row=r2, column=1, sticky="we")
         r2 += 1
 
         tk.Label(right, text="Будинок / квартира:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
@@ -1115,7 +1120,7 @@ class App(tk.Tk):
 
         tk.Label(right, text="Одержувач, ПІБ:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
         self.recipient_name_var = tk.StringVar()
-        tk.Entry(right, textvariable=self.recipient_name_var, width=32, font=FONT).grid(row=r2, column=1, sticky="w")
+        tk.Entry(right, textvariable=self.recipient_name_var, width=32, font=FONT).grid(row=r2, column=1, sticky="we")
         r2 += 1
 
         tk.Label(right, text="Оплата доставки:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
@@ -1185,6 +1190,10 @@ class App(tk.Tk):
             width=38, font=FONT
         )
         self.product_entry.grid(row=0, column=1, padx=4)
+        # якщо після вибору товару з прайсу користувач далі редагує назву —
+        # це вже, ймовірно, інший (новий) товар, тож розблоковуємо ціну й вагу
+        self._selected_product_label = None
+        self.product_entry.var.trace_add("write", self._on_product_text_changed)
 
         tk.Label(add_frame, text="Код:", font=FONT).grid(row=0, column=2, padx=4)
         self.item_code_entry = AutocompleteEntry(
@@ -1195,11 +1204,13 @@ class App(tk.Tk):
 
         tk.Label(add_frame, text="Ціна:", font=FONT).grid(row=0, column=4, padx=4)
         self.item_price_var = tk.StringVar()
-        tk.Entry(add_frame, textvariable=self.item_price_var, width=8, font=FONT).grid(row=0, column=5)
+        self.item_price_entry = tk.Entry(add_frame, textvariable=self.item_price_var, width=8, font=FONT)
+        self.item_price_entry.grid(row=0, column=5)
 
         tk.Label(add_frame, text="Вага/од:", font=FONT).grid(row=0, column=6, padx=4)
         self.item_weight_var = tk.StringVar()
-        tk.Entry(add_frame, textvariable=self.item_weight_var, width=8, font=FONT).grid(row=0, column=7)
+        self.item_weight_entry = tk.Entry(add_frame, textvariable=self.item_weight_var, width=8, font=FONT)
+        self.item_weight_entry.grid(row=0, column=7)
 
         tk.Label(add_frame, text="Од.вим:", font=FONT).grid(row=0, column=8, padx=4)
         self.item_unit_var = tk.StringVar()
@@ -1221,8 +1232,8 @@ class App(tk.Tk):
         table_frame = tk.Frame(canvas_wrap)
         table_frame.pack(fill="both", expand=True, padx=14, pady=4)
 
-        cols = ("code", "name", "unit", "qty", "price", "sum", "weight_unit", "weight_total")
-        headers = ["Код", "Найменування", "Од.вим", "К-сть", "Ціна", "Сума", "Вага/од", "Вага всього"]
+        cols = ("name", "code", "unit", "qty", "price", "sum", "weight_unit", "weight_total")
+        headers = ["Найменування", "Код", "Од.вим", "К-сть", "Ціна", "Сума", "Вага/од", "Вага всього"]
         self.items_tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=8)
         for c, h in zip(cols, headers):
             self.items_tree.heading(c, text=h)
@@ -1551,6 +1562,9 @@ class App(tk.Tk):
         self.item_price_var.set(str(product.get("price") or ""))
         self.item_weight_var.set(str(product.get("weight") or ""))
         self.item_unit_var.set(product.get("unit") or "")
+        self._selected_product_label = self.product_entry.get()
+        self.item_price_entry.configure(state="readonly")
+        self.item_weight_entry.configure(state="readonly")
 
     def _on_product_code_selected(self, label, product):
         self._selected_product = product
@@ -1558,6 +1572,19 @@ class App(tk.Tk):
         self.item_price_var.set(str(product.get("price") or ""))
         self.item_weight_var.set(str(product.get("weight") or ""))
         self.item_unit_var.set(product.get("unit") or "")
+        self._selected_product_label = self.product_entry.get()
+        self.item_price_entry.configure(state="readonly")
+        self.item_weight_entry.configure(state="readonly")
+
+    def _on_product_text_changed(self, *args):
+        """Якщо після вибору товару з прайсу назву змінили вручну — це вже,
+        ймовірно, інший товар: скидаємо прив'язку до прайсу й розблоковуємо
+        ціну/вагу для ручного введення."""
+        if self._selected_product is not None and self.product_entry.get() != self._selected_product_label:
+            self._selected_product = None
+            self._selected_product_label = None
+            self.item_price_entry.configure(state="normal")
+            self.item_weight_entry.configure(state="normal")
 
     # -- товарні рядки --
     def _add_item(self):
@@ -1599,16 +1626,19 @@ class App(tk.Tk):
         }
         self.current_items.append(item)
         self.items_tree.insert("", "end", values=(
-            item["code"], item["name"], item["unit"], item["qty"],
+            item["name"], item["code"], item["unit"], item["qty"],
             item["price"], item["sum"], item["weight_unit"], item["weight_total"]
         ))
         self.product_entry.set("")
         self.item_code_entry.set("")
+        self.item_price_entry.configure(state="normal")
         self.item_price_var.set("")
+        self.item_weight_entry.configure(state="normal")
         self.item_weight_var.set("")
         self.item_unit_var.set("")
         self.item_qty_var.set("1")
         self._selected_product = None
+        self._selected_product_label = None
         self._update_totals()
 
     def _remove_selected_item(self):
@@ -2302,8 +2332,8 @@ class App(tk.Tk):
         # -- товари --
         tk.Label(wrap, text="Товари", font=FONT_BOLD, bg=COLOR_BG, fg=COLOR_TEXT).pack(
             anchor="w", pady=(14, 4))
-        cols = ("code", "name", "unit", "qty", "price", "sum")
-        headers = ["Код", "Найменування", "Од.вим", "К-сть", "Ціна", "Сума"]
+        cols = ("name", "code", "unit", "qty", "price", "sum")
+        headers = ["Найменування", "Код", "Од.вим", "К-сть", "Ціна", "Сума"]
         items_tree = ttk.Treeview(wrap, columns=cols, show="headings", height=min(8, max(3, len(items))))
         for c, h in zip(cols, headers):
             items_tree.heading(c, text=h)
@@ -2311,7 +2341,7 @@ class App(tk.Tk):
         items_tree.column("name", width=220, anchor="w")
         for it in items:
             items_tree.insert("", "end", values=(
-                it.get("code"), it.get("name"), it.get("unit"), it.get("qty"),
+                it.get("name"), it.get("code"), it.get("unit"), it.get("qty"),
                 it.get("price"), it.get("sum")
             ))
         items_tree.pack(fill="x")
