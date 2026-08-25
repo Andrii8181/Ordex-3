@@ -1558,21 +1558,30 @@ class App(tk.Tk):
 
     def _on_product_selected(self, label, product):
         self._selected_product = product
+        clean_name = product.get("name") or ""
+        # прибираємо код із назви — підказка показує "Назва (Код)" для
+        # зручності вибору, але в самому полі товару має лишитись тільки
+        # назва, код окремо в своєму полі (без дублювання)
+        self._selected_product_label = clean_name
+        self.product_entry.set(clean_name)
         self.item_code_entry.set(product.get("code") or "")
         self.item_price_var.set(str(product.get("price") or ""))
         self.item_weight_var.set(str(product.get("weight") or ""))
         self.item_unit_var.set(product.get("unit") or "")
-        self._selected_product_label = self.product_entry.get()
         self.item_price_entry.configure(state="readonly")
         self.item_weight_entry.configure(state="readonly")
 
     def _on_product_code_selected(self, label, product):
         self._selected_product = product
-        self.product_entry.set(product.get("name") or "")
+        clean_name = product.get("name") or ""
+        self._selected_product_label = clean_name
+        self.product_entry.set(clean_name)
+        # прибираємо назву з коду — підказка показує "Код — Назва", але в
+        # полі коду має лишитись тільки код
+        self.item_code_entry.set(product.get("code") or "")
         self.item_price_var.set(str(product.get("price") or ""))
         self.item_weight_var.set(str(product.get("weight") or ""))
         self.item_unit_var.set(product.get("unit") or "")
-        self._selected_product_label = self.product_entry.get()
         self.item_price_entry.configure(state="readonly")
         self.item_weight_entry.configure(state="readonly")
 
