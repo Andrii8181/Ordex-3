@@ -1781,6 +1781,7 @@ class App(tk.Tk):
         header["ttn_status"] = None
         header["ttn_error"] = None
         header["ttn_pdf_path"] = None
+        header["shipped_date"] = None
         if self.auto_ttn_var.get() and carrier != "Самовивіз":
             sender = db.get_sender(self.payment_var.get().strip())
             if sender and sender.get("carrier") == carrier:
@@ -1809,6 +1810,8 @@ class App(tk.Tk):
                 header["ttn"] = result["ttn"]
                 header["ttn_ref"] = result.get("ref")
                 header["ttn_status"] = "created"
+                # дата відвантаження = момент фактичного створення ТТН
+                header["shipped_date"] = date.today().isoformat()
 
                 # -- одразу пробуємо завантажити друкований бланк ТТН; якщо
                 # не вийде — не критично, заявка все одно збережеться, а
@@ -2028,8 +2031,9 @@ class App(tk.Tk):
         tk.Button(header_row, text="Перевірити статуси зараз", font=FONT,
                   command=self._run_tracking_check_async).pack(side="right")
 
-        cols = ("number", "date", "buyer", "sum", "weight", "ttn", "status", "file")
-        headers = ["№", "Дата", "Покупець", "Сума", "Вага", "№ ТТН", "Статус доставки", "Файл"]
+        cols = ("number", "date", "shipped", "buyer", "sum", "weight", "ttn", "status", "file")
+        headers = ["№", "Дата створення", "Дата відвантаження", "Покупець", "Сума", "Вага",
+                   "№ ТТН", "Статус доставки", "Файл"]
         self.history_tree = ttk.Treeview(parent, columns=cols, show="headings")
         for c, h in zip(cols, headers):
             # клік по заголовку сортує за цією колонкою (з прив'язкою рядка
@@ -2056,12 +2060,16 @@ class App(tk.Tk):
                   command=self._refresh_history).pack(side="left")
         tk.Button(btn_row, text="Переглянути деталі", font=FONT,
                   command=self._open_order_details_from_selection).pack(side="left", padx=8)
+        tk.Button(btn_row, text="Створити ТТН", font=FONT, bg=COLOR_ACCENT, fg="white",
+                  activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                  relief="flat", padx=10, pady=4, cursor="hand2",
+                  command=self._create_selected_ttn).pack(side="left")
         tk.Button(btn_row, text="Скасувати ТТН", font=FONT, bg="#FBE1E1", fg=COLOR_TEXT,
                   relief="flat", padx=10, pady=4, cursor="hand2",
-                  command=self._cancel_selected_ttn).pack(side="left")
+                  command=self._cancel_selected_ttn).pack(side="left", padx=8)
         tk.Button(btn_row, text="Видалити заявку", font=FONT, bg="#E5A3A3", fg="white",
                   relief="flat", padx=10, pady=4, cursor="hand2",
-                  command=self._cancel_selected_order).pack(side="left", padx=8)
+                  command=self._cancel_selected_order).pack(side="left")
 
         # стан сортування: (ключ_колонки, reverse)
         self._history_orders = []
@@ -2098,8 +2106,8 @@ class App(tk.Tk):
 
             self.history_tree.insert("", "end", iid=str(o["id"]), values=(
                 o["order_number"], o["order_date"][:10] if o["order_date"] else "",
-                o["buyer_name"], o["total_sum"], o["total_weight"], ttn_display,
-                status_display, o["file_name"]
+                o.get("shipped_date") or "", o["buyer_name"], o["total_sum"], o["total_weight"],
+                ttn_display, status_display, o["file_name"]
             ), tags=(tag,))
 
     def _sort_history(self, column):
@@ -2118,6 +2126,10 @@ class App(tk.Tk):
                     return (1, str(val))
             if column == "date":
                 return o.get("order_date") or ""
+            if column == "shipped":
+                # заявки без дати відвантаження — в кінці списку при
+                # сортуванні за зростанням, незалежно від напрямку сортування
+                return (1, "") if not o.get("shipped_date") else (0, o["shipped_date"])
             if column == "buyer":
                 return (o.get("buyer_name") or "").lower()
             if column == "sum":
@@ -2139,12 +2151,92 @@ class App(tk.Tk):
 
         # позначаємо колонку стрілкою напряму в заголовку, щоб було видно,
         # за чим і в якому напрямку зараз відсортовано
-        cols = ("number", "date", "buyer", "sum", "weight", "ttn", "status", "file")
-        headers = ["№", "Дата", "Покупець", "Сума", "Вага", "№ ТТН", "Статус доставки", "Файл"]
+        cols = ("number", "date", "shipped", "buyer", "sum", "weight", "ttn", "status", "file")
+        headers = ["№", "Дата створення", "Дата відвантаження", "Покупець", "Сума", "Вага",
+                   "№ ТТН", "Статус доставки", "Файл"]
         arrow = " ▼" if self._history_sort_reverse else " ▲"
         for c, h in zip(cols, headers):
             text = h + (arrow if c == column else "")
             self.history_tree.heading(c, text=text)
+
+    def _create_selected_ttn(self):
+        sel = self.history_tree.selection()
+        if not sel:
+            self._warn("Увага", "Виберіть заявку в списку.")
+            return
+        self._create_ttn_for_saved_order(int(sel[0]))
+
+    def _create_ttn_for_saved_order(self, order_id, refresh_dialog_callback=None):
+        """
+        Створює ТТН для вже збереженої заявки — коли заявку сформували без
+        ТТН (наприклад, клієнт ще не оплатив), а тепер, коли оплата
+        надійшла, товар нарешті відвантажується. Дата успішного створення
+        ТТН фіксується як дата відвантаження.
+        """
+        order = db.get_order(order_id)
+        if not order:
+            return
+        if order.get("ttn") and order.get("ttn_status") != "cancelled":
+            self._info("Вже є ТТН", f"У цієї заявки вже є ТТН №{order['ttn']}.")
+            return
+        carrier = order.get("carrier")
+        if not carrier or carrier == "Самовивіз":
+            self._warn("Увага", "Для самовивозу ТТН не потрібен.")
+            return
+
+        sender = db.get_sender(order.get("payment_method") or "")
+        if sender is None:
+            self._error("Не вдалось створити ТТН",
+                        "Не знайдено відправника (спосіб оплати) для цієї заявки. "
+                        "Перевірте Налаштування → Відправники.")
+            return
+        if sender.get("carrier") != carrier:
+            self._error(
+                "Не вдалось створити ТТН",
+                f"Відправник «{order.get('payment_method')}» налаштований для "
+                f"перевізника «{sender.get('carrier') or '—'}», а в заявці — «{carrier}». "
+                f"Перевірте Налаштування → Відправники."
+            )
+            return
+
+        sender_extra = dict(sender.get("extra") or {})
+        if order.get("sender_warehouse_number"):
+            sender_extra["sender_warehouse"] = order["sender_warehouse_number"]
+        credentials = {"api_key": sender.get("api_key"), "extra": sender_extra}
+
+        items = db.get_order_items(order_id)
+        self.config(cursor="watch")
+        self.update_idletasks()
+        try:
+            result = carriers.create_ttn(carrier, order, items, credentials)
+            ttn = result["ttn"]
+            ttn_ref = result.get("ref")
+            shipped_date = date.today().isoformat()
+
+            pdf_path = None
+            try:
+                pdf_bytes = carriers.fetch_ttn_pdf(ttn_ref, credentials["api_key"])
+                pdf_name = order["file_name"].rsplit(".", 1)[0] + "_ттн.pdf"
+                new_path = os.path.join(OUTPUT_DIR, pdf_name)
+                os.makedirs(OUTPUT_DIR, exist_ok=True)
+                with open(new_path, "wb") as f:
+                    f.write(pdf_bytes)
+                pdf_path = new_path
+            except Exception:
+                pass  # бланк можна довантажити пізніше вручну з історії
+
+            db.apply_ttn_to_order(order_id, ttn, ttn_ref, "created",
+                                   ttn_pdf_path=pdf_path, shipped_date=shipped_date)
+            self._info("Готово", f"ТТН №{ttn} створено.\nДата відвантаження: {shipped_date}")
+        except Exception as e:
+            reason = str(e) if isinstance(e, carriers.CarrierAPIError) else f"Технічна помилка: {e}"
+            db.apply_ttn_to_order(order_id, None, None, "failed", ttn_error=reason)
+            self._error("Не вдалось створити ТТН", reason)
+        finally:
+            self.config(cursor="")
+            self._refresh_history()
+            if refresh_dialog_callback:
+                refresh_dialog_callback()
 
     def _cancel_selected_ttn(self):
         sel = self.history_tree.selection()
@@ -2372,6 +2464,9 @@ class App(tk.Tk):
             }.get(order.get("ttn_status"), order.get("ttn_status") or "")
             tk.Label(ttn_frame, text=f"№ {order['ttn']} ({ttn_status_text})",
                      font=FONT_BOLD, bg=COLOR_BG, fg=COLOR_ACCENT_DARK).pack(anchor="w")
+            if order.get("shipped_date"):
+                tk.Label(ttn_frame, text=f"Дата відвантаження: {order['shipped_date']}",
+                         font=FONT_SMALL, bg=COLOR_BG, fg=COLOR_TEXT_MUTED).pack(anchor="w", pady=(2, 0))
             if order.get("tracking_status"):
                 tk.Label(ttn_frame, text=f"Статус доставки: {order['tracking_status']}",
                          font=FONT_SMALL, bg=COLOR_BG, fg=COLOR_TEXT_MUTED).pack(anchor="w", pady=(2, 0))
@@ -2415,10 +2510,28 @@ class App(tk.Tk):
                 tk.Button(btns, text="Скасувати ТТН", font=FONT_SMALL, bg="#FBE1E1", fg=COLOR_TEXT,
                           relief="flat", padx=10, pady=4, cursor="hand2",
                           command=cancel_and_refresh).pack(side="left", padx=8)
+            elif order.get("carrier") and order.get("carrier") != "Самовивіз":
+                # ТТН був скасований — можна створити новий, коли товар
+                # реально готовий до відвантаження
+                def create_and_refresh():
+                    self._create_ttn_for_saved_order(order_id, refresh_dialog_callback=lambda: win.destroy())
+                tk.Button(btns, text="Створити ТТН заново", font=FONT_SMALL,
+                          bg=COLOR_ACCENT, fg="white", relief="flat", padx=10, pady=4,
+                          cursor="hand2", command=create_and_refresh).pack(side="left", padx=8)
         else:
-            reason = order.get("ttn_error") or "ТТН не створювався для цієї заявки."
+            reason = order.get("ttn_error") or (
+                "ТТН ще не створювався — заявка чекає на оплату чи готовність "
+                "до відвантаження. Коли товар готовий відвантажувати, натисніть "
+                "кнопку нижче."
+            )
             tk.Label(ttn_frame, text=reason, font=FONT_SMALL, bg=COLOR_BG,
                      fg=COLOR_TEXT_MUTED, wraplength=500, justify="left").pack(anchor="w")
+            if order.get("carrier") and order.get("carrier") != "Самовивіз":
+                def create_and_refresh():
+                    self._create_ttn_for_saved_order(order_id, refresh_dialog_callback=lambda: win.destroy())
+                tk.Button(ttn_frame, text="Створити ТТН", font=FONT_SMALL,
+                          bg=COLOR_ACCENT, fg="white", relief="flat", padx=10, pady=4,
+                          cursor="hand2", command=create_and_refresh).pack(anchor="w", pady=(8, 0))
 
         # -- файл заявки --
         file_btns = tk.Frame(wrap, bg=COLOR_BG)

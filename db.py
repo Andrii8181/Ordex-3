@@ -212,6 +212,7 @@ def init_db():
     _ensure_column(conn, "orders", "sender_warehouse_number", "TEXT")
     _ensure_column(conn, "orders", "ttn_pdf_path", "TEXT")
     _ensure_column(conn, "orders", "order_status", "TEXT")
+    _ensure_column(conn, "orders", "shipped_date", "TEXT")
 
     _migrate_to_senders_table(conn)
     conn.commit()
@@ -594,8 +595,8 @@ def save_order(header, items, file_name):
                              recipient_address, recipient_name, recipient_type,
                              recipient_edrpou, total_sum, total_weight,
                              client_id, file_name, ttn, ttn_ref, ttn_status, ttn_error,
-                             ttn_pdf_path, payer_type, seats_amount, cod_amount, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             ttn_pdf_path, shipped_date, payer_type, seats_amount, cod_amount, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         header["order_number"], header["order_date"], header["buyer_name"],
         header.get("buyer_address"), header.get("responsible"),
@@ -610,7 +611,7 @@ def save_order(header, items, file_name):
         header.get("total_sum"), header.get("total_weight"),
         header.get("client_id"), file_name,
         header.get("ttn"), header.get("ttn_ref"), header.get("ttn_status"), header.get("ttn_error"),
-        header.get("ttn_pdf_path"),
+        header.get("ttn_pdf_path"), header.get("shipped_date"),
         header.get("payer_type"), header.get("seats_amount"), header.get("cod_amount"),
         datetime.now().isoformat(timespec="seconds"),
     ))
@@ -725,6 +726,25 @@ def get_order(order_id):
 def set_order_ttn_pdf_path(order_id, pdf_path):
     conn = get_connection()
     conn.execute("UPDATE orders SET ttn_pdf_path = ? WHERE id = ?", (pdf_path, order_id))
+    conn.commit()
+    conn.close()
+
+
+def apply_ttn_to_order(order_id, ttn, ttn_ref, ttn_status, ttn_error=None,
+                        ttn_pdf_path=None, shipped_date=None):
+    """
+    Проставляє результат створення ТТН у вже збережену заявку — коли ТТН
+    формується не одразу при створенні заявки, а пізніше (наприклад, після
+    того як клієнт оплатив товар за кілька днів). shipped_date — дата
+    фактичного відвантаження, тобто дата, коли ТТН реально створено.
+    """
+    conn = get_connection()
+    conn.execute("""
+        UPDATE orders SET ttn = ?, ttn_ref = ?, ttn_status = ?, ttn_error = ?,
+                           ttn_pdf_path = COALESCE(?, ttn_pdf_path),
+                           shipped_date = COALESCE(?, shipped_date)
+        WHERE id = ?
+    """, (ttn, ttn_ref, ttn_status, ttn_error, ttn_pdf_path, shipped_date, order_id))
     conn.commit()
     conn.close()
 
