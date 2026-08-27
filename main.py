@@ -157,6 +157,10 @@ class App(tk.Tk):
         self._selected_product = None
         self._warehouse_cache = {}
         self._warehouse_fetch_in_progress = set()
+        # None -> звичайне створення нової заявки; інакше -> id заявки,
+        # яку зараз редагують (кнопка "Сформувати заявку" тоді оновлює
+        # наявний запис замість створення нового)
+        self._editing_order_id = None
 
         # -- глобальна світла тема: замість переписування кожного віджета
         # окремо, задаємо кольори за замовчуванням через реєстр опцій Tk.
@@ -203,7 +207,8 @@ class App(tk.Tk):
                              activebackground=COLOR_SIDEBAR_ACTIVE,
                              activeforeground="white", font=FONT, bd=0,
                              cursor="hand2",
-                             padx=16, pady=12, command=lambda k=key: self._show_view(k))
+                             padx=16, pady=12,
+                             command=lambda k=key: self._on_sidebar_nav(k))
             btn.pack(fill="x", padx=8, pady=(16, 2) if label == SIDEBAR_ITEMS[0][1] else (2, 2))
             self.sidebar_buttons[key] = btn
 
@@ -327,6 +332,16 @@ class App(tk.Tk):
             self._refresh_history()
         elif key == "clients":
             self._refresh_clients()
+
+    def _on_sidebar_nav(self, key):
+        # клік по "Нова заявка" в бічному меню під час незбереженого
+        # редагування старої заявки означає, що користувач передумав —
+        # скидаємо режим редагування, щоб випадково не перезаписати її
+        if key == "order" and self._editing_order_id is not None:
+            self._editing_order_id = None
+            self.generate_order_btn.configure(text="Сформувати заявку")
+            self._reset_order_form()
+        self._show_view(key)
 
     # ------------------------------------------------------------------
     # Верхня панель: Файл / Налаштування / Звіти
@@ -1187,7 +1202,7 @@ class App(tk.Tk):
         tk.Label(add_frame, text="Товар:", font=FONT).grid(row=0, column=0, padx=4, pady=8, sticky="w")
         self.product_entry = AutocompleteEntry(
             add_frame, search_fn=self._search_products_fn, on_select=self._on_product_selected,
-            width=38, font=FONT
+            width=26, font=FONT
         )
         self.product_entry.grid(row=0, column=1, padx=4)
         # якщо після вибору товару з прайсу користувач далі редагує назву —
@@ -1198,7 +1213,7 @@ class App(tk.Tk):
         tk.Label(add_frame, text="Код:", font=FONT).grid(row=0, column=2, padx=4)
         self.item_code_entry = AutocompleteEntry(
             add_frame, search_fn=self._search_products_by_code_fn,
-            on_select=self._on_product_code_selected, width=20, font=FONT
+            on_select=self._on_product_code_selected, width=14, font=FONT
         )
         self.item_code_entry.grid(row=0, column=3, padx=4)
 
@@ -1207,25 +1222,27 @@ class App(tk.Tk):
         self.item_price_entry = tk.Entry(add_frame, textvariable=self.item_price_var, width=8, font=FONT)
         self.item_price_entry.grid(row=0, column=5)
 
-        tk.Label(add_frame, text="Вага/од:", font=FONT).grid(row=0, column=6, padx=4)
+        # другий рядок — щоб уся панель гарантовано вміщалась по ширині
+        # навіть на невеликих екранах, і кнопка "+" завжди була видна
+        tk.Label(add_frame, text="Вага/од:", font=FONT).grid(row=1, column=0, padx=4, pady=(0, 8), sticky="w")
         self.item_weight_var = tk.StringVar()
         self.item_weight_entry = tk.Entry(add_frame, textvariable=self.item_weight_var, width=8, font=FONT)
-        self.item_weight_entry.grid(row=0, column=7)
+        self.item_weight_entry.grid(row=1, column=1, sticky="w", padx=4)
 
-        tk.Label(add_frame, text="Од.вим:", font=FONT).grid(row=0, column=8, padx=4)
+        tk.Label(add_frame, text="Од.вим:", font=FONT).grid(row=1, column=2, padx=4)
         self.item_unit_var = tk.StringVar()
-        tk.Entry(add_frame, textvariable=self.item_unit_var, width=6, font=FONT).grid(row=0, column=9)
+        tk.Entry(add_frame, textvariable=self.item_unit_var, width=6, font=FONT).grid(row=1, column=3, sticky="w")
 
-        tk.Label(add_frame, text="К-сть:", font=FONT).grid(row=0, column=10, padx=4)
+        tk.Label(add_frame, text="К-сть:", font=FONT).grid(row=1, column=4, padx=4)
         self.item_qty_var = tk.StringVar(value="1")
-        tk.Entry(add_frame, textvariable=self.item_qty_var, width=6, font=FONT).grid(row=0, column=11)
+        tk.Entry(add_frame, textvariable=self.item_qty_var, width=6, font=FONT).grid(row=1, column=5, sticky="w")
 
-        tk.Button(add_frame, text="+", width=3, font=FONT_BOLD, bg=COLOR_ACCENT, fg="white",
+        tk.Button(add_frame, text="+ Додати", font=FONT_BOLD, bg=COLOR_ACCENT, fg="white",
                   activebackground=COLOR_ACCENT_DARK, activeforeground="white",
-                  command=self._add_item).grid(row=0, column=12, padx=8)
+                  padx=10, command=self._add_item).grid(row=1, column=6, padx=8, sticky="w")
         tk.Label(add_frame, text="Якщо товару немає в прайсі — впишіть назву,\n"
                                   "ціну і вагу вручну.", font=FONT_SMALL,
-                 fg=COLOR_TEXT_MUTED).grid(row=1, column=0, columnspan=8, sticky="w", padx=4, pady=(2, 6))
+                 fg=COLOR_TEXT_MUTED).grid(row=2, column=0, columnspan=7, sticky="w", padx=4, pady=(2, 6))
 
         # -- таблиця товарів (з вертикальною прокруткою — заявка може мати
         # багато позицій) --
@@ -1263,10 +1280,12 @@ class App(tk.Tk):
         totals_row.pack(fill="x", padx=14, pady=14)
         self.totals_label = tk.Label(totals_row, text="Разом: 0.00 грн,  0.00 кг", font=FONT_BOLD)
         self.totals_label.pack(side="right", anchor="s", pady=(0, 4))
-        tk.Button(totals_row, text="Сформувати заявку", bg=COLOR_ACCENT, fg="white",
-                  activebackground=COLOR_ACCENT_DARK, activeforeground="white",
-                  font=FONT_BOLD, padx=22, pady=10,
-                  command=self._generate_order).pack(side="left", expand=True)
+        self.generate_order_btn = tk.Button(
+            totals_row, text="Сформувати заявку", bg=COLOR_ACCENT, fg="white",
+            activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+            font=FONT_BOLD, padx=22, pady=10,
+            command=self._generate_order)
+        self.generate_order_btn.pack(side="left", expand=True)
 
         # -- колесо миші прокручує область під курсором: над формою — форму,
         # над таблицею товарів — саму таблицю (вона виключена через skip) --
@@ -1734,10 +1753,22 @@ class App(tk.Tk):
 
         db.remember_city(oblast, city)
 
+        existing_order = db.get_order(self._editing_order_id) if self._editing_order_id else None
+
         order_date = date.today()
+        if existing_order:
+            # редагування: дата створення заявки лишається такою, якою
+            # була спочатку, а не переставляється на сьогодні
+            try:
+                order_date_dt = datetime.fromisoformat(existing_order["order_date"])
+            except (ValueError, TypeError):
+                order_date_dt = datetime(order_date.year, order_date.month, order_date.day)
+        else:
+            order_date_dt = datetime(order_date.year, order_date.month, order_date.day)
+
         header = {
             "order_number": self.order_number_var.get().strip(),
-            "order_date": datetime(order_date.year, order_date.month, order_date.day),
+            "order_date": order_date_dt,
             "buyer_name": buyer_name,
             "buyer_address": recipient_address,
             "responsible": self.responsible_var.get().strip(),
@@ -1772,7 +1803,8 @@ class App(tk.Tk):
             row["seq_no"] = i
             items_for_export.append(row)
 
-        filename = order_export.build_filename(buyer_name, order_date, header["order_number"])
+        filename = existing_order["file_name"] if existing_order else \
+            order_export.build_filename(buyer_name, order_date, header["order_number"])
         output_path = os.path.join(OUTPUT_DIR, filename)
 
         # -- автоматичне створення ТТН (якщо увімкнено і перевізник підтримується) --
@@ -1782,6 +1814,15 @@ class App(tk.Tk):
         header["ttn_error"] = None
         header["ttn_pdf_path"] = None
         header["shipped_date"] = None
+        if not self.auto_ttn_var.get() and existing_order:
+            # редагування без спроби створити новий ТТН — те, що вже було
+            # створено раніше (чи не створено), лишається без змін
+            header["ttn"] = existing_order.get("ttn")
+            header["ttn_ref"] = existing_order.get("ttn_ref")
+            header["ttn_status"] = existing_order.get("ttn_status")
+            header["ttn_error"] = existing_order.get("ttn_error")
+            header["ttn_pdf_path"] = existing_order.get("ttn_pdf_path")
+            header["shipped_date"] = existing_order.get("shipped_date")
         if self.auto_ttn_var.get() and carrier != "Самовивіз":
             sender = db.get_sender(self.payment_var.get().strip())
             if sender and sender.get("carrier") == carrier:
@@ -1847,7 +1888,11 @@ class App(tk.Tk):
 
         order_export.generate_order_excel(header, items_for_export, output_path)
 
-        db.save_order(header, self.current_items, filename)
+        was_editing = self._editing_order_id is not None
+        if was_editing:
+            db.update_order(self._editing_order_id, header, self.current_items, filename)
+        else:
+            db.save_order(header, self.current_items, filename)
 
         # запам'ятовуємо відповідальну особу — при першому формуванні
         # заявки користувач вписує її сам, а надалі програма підставляє
@@ -1855,11 +1900,19 @@ class App(tk.Tk):
         if header.get("responsible"):
             db.set_setting("default_responsible", header["responsible"])
 
-        if header.get("ttn"):
-            self._info("Готово", f"Заявку збережено:\n{output_path}\n\n№ ТТН: {header['ttn']}")
+        if was_editing:
+            self._editing_order_id = None
+            self.generate_order_btn.configure(text="Сформувати заявку")
+            self._reset_order_form()
+            self._info("Готово", f"Заявку №{header['order_number']} оновлено:\n{output_path}")
+            self._show_view("history")
+            self._refresh_history()
         else:
-            self._info("Готово", f"Заявку збережено:\n{output_path}")
-        self._reset_order_form()
+            if header.get("ttn"):
+                self._info("Готово", f"Заявку збережено:\n{output_path}\n\n№ ТТН: {header['ttn']}")
+            else:
+                self._info("Готово", f"Заявку збережено:\n{output_path}")
+            self._reset_order_form()
 
     def _reset_order_form(self):
         self.order_number_var.set("")
@@ -2060,6 +2113,8 @@ class App(tk.Tk):
                   command=self._refresh_history).pack(side="left")
         tk.Button(btn_row, text="Переглянути деталі", font=FONT,
                   command=self._open_order_details_from_selection).pack(side="left", padx=8)
+        tk.Button(btn_row, text="Редагувати", font=FONT,
+                  command=self._edit_selected_order).pack(side="left", padx=(0, 8))
         tk.Button(btn_row, text="Створити ТТН", font=FONT, bg=COLOR_ACCENT, fg="white",
                   activebackground=COLOR_ACCENT_DARK, activeforeground="white",
                   relief="flat", padx=10, pady=4, cursor="hand2",
@@ -2166,6 +2221,34 @@ class App(tk.Tk):
             return
         self._create_ttn_for_saved_order(int(sel[0]))
 
+    def _regenerate_order_excel(self, order_id):
+        """
+        Перебудовує Excel-файл заявки з поточних даних у базі — так, щоб
+        файл завжди відображав актуальний стан (номер ТТН, якщо його
+        створено пізніше; чи його відсутність, якщо скасовано). Викликається
+        після створення чи скасування ТТН для вже збереженої заявки, а не
+        лише в момент її первинного формування.
+        """
+        order = db.get_order(order_id)
+        if not order:
+            return
+        items = db.get_order_items(order_id)
+        items_for_export = []
+        for i, it in enumerate(items, start=1):
+            row = dict(it)
+            row["seq_no"] = i
+            items_for_export.append(row)
+        header = dict(order)
+        try:
+            header["order_date"] = datetime.fromisoformat(order["order_date"])
+        except (ValueError, TypeError):
+            pass
+        output_path = os.path.join(OUTPUT_DIR, order["file_name"])
+        try:
+            order_export.generate_order_excel(header, items_for_export, output_path)
+        except Exception:
+            pass  # неможливість перегенерувати файл не повинна зривати основну дію
+
     def _create_ttn_for_saved_order(self, order_id, refresh_dialog_callback=None):
         """
         Створює ТТН для вже збереженої заявки — коли заявку сформували без
@@ -2227,6 +2310,7 @@ class App(tk.Tk):
 
             db.apply_ttn_to_order(order_id, ttn, ttn_ref, "created",
                                    ttn_pdf_path=pdf_path, shipped_date=shipped_date)
+            self._regenerate_order_excel(order_id)
             self._info("Готово", f"ТТН №{ttn} створено.\nДата відвантаження: {shipped_date}")
         except Exception as e:
             reason = str(e) if isinstance(e, carriers.CarrierAPIError) else f"Технічна помилка: {e}"
@@ -2258,6 +2342,7 @@ class App(tk.Tk):
         try:
             carriers.cancel_ttn(order["carrier"], order.get("ttn_ref"), credentials)
             db.mark_order_ttn_cancelled(order["id"])
+            self._regenerate_order_excel(order["id"])
             return True, None
         except carriers.CarrierAPIError as e:
             return False, str(e)
@@ -2358,6 +2443,90 @@ class App(tk.Tk):
             self._error("Не вдалось відкрити файл", str(e))
             return False
 
+    def _edit_selected_order(self):
+        sel = self.history_tree.selection()
+        if not sel:
+            self._warn("Увага", "Виберіть заявку в списку.")
+            return
+        self._edit_order(int(sel[0]))
+
+    def _edit_order(self, order_id):
+        order = db.get_order(order_id)
+        if not order:
+            return
+        if order.get("order_status") == "cancelled":
+            self._warn("Увага", "Скасовану заявку редагувати не можна.")
+            return
+
+        items = db.get_order_items(order_id)
+
+        # -- відправник --
+        self.order_number_var.set(order.get("order_number") or "")
+        self.responsible_var.set(order.get("responsible") or "")
+        self.payment_var.set(order.get("payment_method") or "")
+        self.sender_phone_var.set(order.get("sender_phone") or "")
+        self.sender_name_var.set(order.get("sender_name") or "")
+        self.sender_warehouse_var.set(order.get("sender_warehouse_number") or "1")
+
+        # -- покупець та одержувач --
+        self.recipient_phone_entry.set(order.get("recipient_phone") or "")
+        self.buyer_entry.set(order.get("buyer_name") or "")
+        self.carrier_var.set(order.get("carrier") or CARRIERS[0])
+        self.delivery_type_var.set(order.get("delivery_type") or "branch")
+        self._apply_delivery_state()
+        self.oblast_entry.set(order.get("recipient_oblast") or "")
+        self.city_entry.set(order.get("recipient_city") or "")
+        self.carrier_branch_entry.set(order.get("carrier_branch") or "")
+        self.street_var.set(order.get("street") or "")
+        self.building_var.set(order.get("building") or "")
+        self.apartment_var.set(order.get("apartment") or "")
+        self.recipient_type_var.set(order.get("recipient_type") or "individual")
+        self._on_recipient_type_changed()
+        self.recipient_edrpou_var.set(order.get("recipient_edrpou") or "")
+        self.recipient_name_var.set(order.get("recipient_name") or "")
+        self.payer_type_var.set(order.get("payer_type") or "recipient")
+        self.seats_amount_var.set(str(order.get("seats_amount") or 1))
+        if order.get("cod_amount"):
+            self.cod_enabled_var.set(True)
+            self.cod_amount_entry.configure(state="normal")
+            self.cod_amount_var.set(str(order["cod_amount"]))
+        else:
+            self.cod_enabled_var.set(False)
+            self.cod_amount_var.set("")
+            self.cod_amount_entry.configure(state="disabled")
+
+        # редагування не створює й не чіпає ТТН автоматично — це окрема,
+        # явна дія ("Створити ТТН" в історії), щоб випадкова зміна адреси
+        # чи товару не спричиняла непередбачене звернення до перевізника
+        self.auto_ttn_var.set(False)
+
+        # -- товари --
+        self.current_items = []
+        self.items_tree.delete(*self.items_tree.get_children())
+        for it in items:
+            item = {
+                "code": it.get("code") or "", "name": it.get("name") or "",
+                "unit": it.get("unit") or "", "qty": it.get("qty") or 0,
+                "price": it.get("price") or 0, "sum": it.get("sum") or 0,
+                "weight_unit": it.get("weight_unit") or 0,
+                "weight_total": it.get("weight_total") or 0,
+            }
+            self.current_items.append(item)
+            self.items_tree.insert("", "end", values=(
+                item["name"], item["code"], item["unit"], item["qty"],
+                item["price"], item["sum"], item["weight_unit"], item["weight_total"]
+            ))
+        self._update_totals()
+
+        self._editing_order_id = order_id
+        self.generate_order_btn.configure(text="Зберегти зміни")
+        self._show_view("order")
+        self._info(
+            "Редагування заявки",
+            f"Заявка №{order.get('order_number')} завантажена для редагування. "
+            f"Внесіть зміни і натисніть «Зберегти зміни» внизу форми."
+        )
+
     def _open_order_details_from_selection(self):
         sel = self.history_tree.selection()
         if not sel:
@@ -2393,6 +2562,13 @@ class App(tk.Tk):
             tk.Button(title_row, text="Видалити заявку", font=FONT_SMALL, bg="#E5A3A3", fg="white",
                       relief="flat", padx=10, pady=4, cursor="hand2",
                       command=cancel_order_and_refresh).pack(side="right")
+
+            def edit_and_close():
+                win.destroy()
+                self._edit_order(order_id)
+            tk.Button(title_row, text="Редагувати заявку", font=FONT_SMALL,
+                      bg=COLOR_ACCENT, fg="white", relief="flat", padx=10, pady=4,
+                      cursor="hand2", command=edit_and_close).pack(side="right", padx=(0, 8))
 
         info_frame = tk.Frame(wrap, bg=COLOR_BG)
         info_frame.pack(fill="x")

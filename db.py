@@ -629,6 +629,59 @@ def save_order(header, items, file_name):
     return order_id
 
 
+def update_order(order_id, header, items, file_name):
+    """
+    Оновлює вже збережену заявку (редагування) — на відміну від save_order,
+    не створює новий запис, а перезаписує наявний за order_id разом з усіма
+    його товарними рядками. file_name лишається тим самим, що й був — щоб
+    "Історія заявок" продовжувала вказувати на один і той самий Excel-файл,
+    який просто перегенерується з новими даними.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE orders SET
+            order_number = ?, order_date = ?, buyer_name = ?, buyer_address = ?,
+            responsible = ?, payment_method = ?, sender_phone = ?, sender_name = ?,
+            sender_warehouse_number = ?, recipient_phone = ?, carrier = ?,
+            carrier_branch = ?, delivery_type = ?,
+            street = ?, building = ?, apartment = ?, recipient_oblast = ?, recipient_city = ?,
+            recipient_address = ?, recipient_name = ?, recipient_type = ?,
+            recipient_edrpou = ?, total_sum = ?, total_weight = ?,
+            client_id = ?, file_name = ?, ttn = ?, ttn_ref = ?, ttn_status = ?, ttn_error = ?,
+            ttn_pdf_path = ?, shipped_date = ?, payer_type = ?, seats_amount = ?, cod_amount = ?
+        WHERE id = ?
+    """, (
+        header["order_number"], header["order_date"], header["buyer_name"],
+        header.get("buyer_address"), header.get("responsible"),
+        header.get("payment_method"), header.get("sender_phone"), header.get("sender_name"),
+        header.get("sender_warehouse_number"),
+        header.get("recipient_phone"), header.get("carrier"),
+        header.get("carrier_branch"), header.get("delivery_type"),
+        header.get("street"), header.get("building"), header.get("apartment"),
+        header.get("recipient_oblast"), header.get("recipient_city"),
+        header.get("recipient_address"), header.get("recipient_name"),
+        header.get("recipient_type"), header.get("recipient_edrpou"),
+        header.get("total_sum"), header.get("total_weight"),
+        header.get("client_id"), file_name,
+        header.get("ttn"), header.get("ttn_ref"), header.get("ttn_status"), header.get("ttn_error"),
+        header.get("ttn_pdf_path"), header.get("shipped_date"),
+        header.get("payer_type"), header.get("seats_amount"), header.get("cod_amount"),
+        order_id,
+    ))
+    cur.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
+    for i, it in enumerate(items, start=1):
+        cur.execute("""
+            INSERT INTO order_items (order_id, seq_no, code, name, unit, qty,
+                                      price, sum, weight_unit, weight_total)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (order_id, i, it.get("code"), it["name"], it.get("unit"),
+              it["qty"], it["price"], it["sum"], it.get("weight_unit"),
+              it.get("weight_total")))
+    conn.commit()
+    conn.close()
+
+
 def list_orders(limit=200):
     conn = get_connection()
     cur = conn.cursor()
