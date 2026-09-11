@@ -1697,7 +1697,7 @@ class App(tk.Tk):
         self.current_items.append(item)
         self.items_tree.insert("", "end", values=(
             item["name"], item["code"], item["unit"], item["qty"],
-            item["price"], item["price_vat"], item["sum"],
+            item["price"], self._price_vat_display(item), item["sum"],
             item["weight_unit"], item["weight_total"]
         ))
         self.product_entry.set("")
@@ -1711,6 +1711,12 @@ class App(tk.Tk):
         self._selected_product = None
         self._selected_product_label = None
         self._update_totals()
+
+    def _price_vat_display(self, item):
+        """Колонка "Ціна з ПДВ" показує значення лише якщо ПДВ реально
+        застосовується до заявки — інакше лишається порожньою, щоб не
+        виглядало так, ніби ПДВ уже враховано, коли насправді ні."""
+        return item.get("price_vat") if self.vat_enabled_var.get() else ""
 
     def _recalculate_items_for_vat(self):
         """
@@ -1731,7 +1737,7 @@ class App(tk.Tk):
         for item in self.current_items:
             self.items_tree.insert("", "end", values=(
                 item["name"], item["code"], item["unit"], item["qty"],
-                item["price"], item["price_vat"], item["sum"],
+                item["price"], self._price_vat_display(item), item["sum"],
                 item["weight_unit"], item["weight_total"]
             ))
         self._update_totals()
@@ -2591,7 +2597,7 @@ class App(tk.Tk):
             self.current_items.append(item)
             self.items_tree.insert("", "end", values=(
                 item["name"], item["code"], item["unit"], item["qty"],
-                item["price"], item["price_vat"], item["sum"],
+                item["price"], self._price_vat_display(item), item["sum"],
                 item["weight_unit"], item["weight_total"]
             ))
         self._update_totals()
