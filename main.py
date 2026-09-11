@@ -705,8 +705,9 @@ class App(tk.Tk):
                                       width=23, font=FONT)
         carrier_combo.grid(row=3, column=1, sticky="w", padx=(8, 0), pady=4)
 
-        # -- місто відправника: потрібне для будь-якого перевізника. Номер
-        # відділення відправника тепер обирається прямо в заявці (там може
+        # -- місто відправника і API-ключ: потрібні для будь-якого
+        # перевізника з підключенням через API (Нова Пошта, САТ, Делівері).
+        # Номер відділення відправника обирається прямо в заявці (там може
         # бути 1 або 7 — залежно від того, звідки цього разу відправляють) --
         common_frame = tk.Frame(form, bg=COLOR_BG)
         common_frame.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
@@ -717,15 +718,11 @@ class App(tk.Tk):
         tk.Entry(common_frame, textvariable=sender_city_var, width=22, font=FONT).grid(
             row=0, column=1, sticky="w", padx=(8, 0), pady=3)
 
-        # -- API-ключ і Ref-и: наразі є лише для Нової Пошти --
-        np_frame = tk.Frame(form, bg=COLOR_BG)
-        np_frame.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
-
-        tk.Label(np_frame, text="API-ключ:", bg=COLOR_BG, font=FONT).grid(
-            row=0, column=0, sticky="w", pady=3)
+        tk.Label(common_frame, text="API-ключ:", bg=COLOR_BG, font=FONT).grid(
+            row=1, column=0, sticky="w", pady=3)
         api_key_var = tk.StringVar()
-        api_key_entry = tk.Entry(np_frame, textvariable=api_key_var, width=45, font=FONT, show="•")
-        api_key_entry.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=3)
+        api_key_entry = tk.Entry(common_frame, textvariable=api_key_var, width=45, font=FONT, show="•")
+        api_key_entry.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=3)
 
         def paste_api_key():
             try:
@@ -734,27 +731,32 @@ class App(tk.Tk):
                 return
             api_key_var.set(clip.strip())
 
-        tk.Button(np_frame, text="Вставити", font=FONT_SMALL, bg="#ECEFF1", fg=COLOR_TEXT,
+        tk.Button(common_frame, text="Вставити", font=FONT_SMALL, bg="#ECEFF1", fg=COLOR_TEXT,
                   relief="flat", padx=8, pady=2, cursor="hand2",
-                  command=paste_api_key).grid(row=0, column=2, sticky="w", padx=(6, 0))
+                  command=paste_api_key).grid(row=1, column=2, sticky="w", padx=(6, 0))
         show_key_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(np_frame, text="показати", variable=show_key_var, bg=COLOR_BG,
+        tk.Checkbutton(common_frame, text="показати", variable=show_key_var, bg=COLOR_BG,
                         font=FONT_SMALL,
                         command=lambda: api_key_entry.configure(
                             show="" if show_key_var.get() else "•")
-                        ).grid(row=0, column=3, sticky="w", padx=(6, 0))
+                        ).grid(row=1, column=3, sticky="w", padx=(6, 0))
+
+        # -- Ref-и та автопідтягування: наразі автоматичне ТТН підключено
+        # лише для Нової Пошти, тому ці поля стосуються тільки її --
+        np_frame = tk.Frame(form, bg=COLOR_BG)
+        np_frame.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         tk.Label(np_frame, text="Ref контрагента-відправника:", bg=COLOR_BG, font=FONT).grid(
-            row=1, column=0, sticky="w", pady=3)
+            row=0, column=0, sticky="w", pady=3)
         sender_cp_ref_var = tk.StringVar()
         tk.Entry(np_frame, textvariable=sender_cp_ref_var, width=40, font=FONT).grid(
-            row=1, column=1, sticky="w", padx=(8, 0), pady=3)
+            row=0, column=1, sticky="w", padx=(8, 0), pady=3)
 
         tk.Label(np_frame, text="Ref контактної особи відправника:", bg=COLOR_BG, font=FONT).grid(
-            row=2, column=0, sticky="w", pady=3)
+            row=1, column=0, sticky="w", pady=3)
         sender_contact_ref_var = tk.StringVar()
         tk.Entry(np_frame, textvariable=sender_contact_ref_var, width=40, font=FONT).grid(
-            row=2, column=1, sticky="w", padx=(8, 0), pady=3)
+            row=1, column=1, sticky="w", padx=(8, 0), pady=3)
 
         def auto_discover_refs(silent=False):
             key = api_key_var.get().strip()
@@ -782,7 +784,8 @@ class App(tk.Tk):
         def on_api_key_focus_out(event=None):
             # автопідтягування Ref одразу після введення/вставки ключа —
             # тихо, без спливаючих вікон, щоб не заважати під час набору;
-            # не чіпаємо поля, якщо Ref уже заповнені вручну
+            # не чіпаємо поля, якщо Ref уже заповнені вручну. Стосується
+            # лише Нової Пошти — тільки для неї є цей метод API.
             if carrier_var.get() == "Нова Пошта" and api_key_var.get().strip() \
                     and not sender_cp_ref_var.get().strip():
                 auto_discover_refs(silent=True)
@@ -791,13 +794,16 @@ class App(tk.Tk):
         tk.Button(np_frame, text="Отримати Ref автоматично", font=FONT_SMALL,
                   bg="#ECEFF1", fg=COLOR_TEXT, relief="flat", padx=8, pady=3,
                   cursor="hand2", command=auto_discover_refs).grid(
-            row=3, column=0, columnspan=2, sticky="w", pady=(2, 4))
+            row=2, column=0, columnspan=2, sticky="w", pady=(2, 4))
 
         tk.Label(np_frame,
-                 text="Для САТ і Делівері API поки не підключено — досить міста й\n"
-                      "відділення вище, ТТН для них створюється вручну.",
+                 text="Ref контрагента й контактної особи відправника потрібні лише\n"
+                      "для Нової Пошти — тільки для неї підключено автоматичне ТТН.\n"
+                      "Для САТ і Делівері API-ключ вище можна зберегти про запас\n"
+                      "(наприклад, для майбутньої інтеграції) — ТТН для них поки що\n"
+                      "оформлюється вручну на сайті перевізника.",
                  bg=COLOR_BG, fg=COLOR_TEXT_MUTED, font=FONT_SMALL,
-                 justify="left").grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+                 justify="left").grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         def update_carrier_fields(*_args):
             carrier = carrier_var.get()
@@ -1133,6 +1139,24 @@ class App(tk.Tk):
         self.recipient_edrpou_entry.grid_remove()
         r2 += 1
 
+        # спосіб оплати доставки актуальний саме для юридичних осіб
+        # (готівка/безготівковий розрахунок) — показується лише для них,
+        # так само як ЄДРПОУ
+        self.delivery_payment_label = tk.Label(right, text="Оплата доставки одержувачем:", font=FONT)
+        self.delivery_payment_label.grid(row=r2, column=0, sticky="w", pady=3)
+        self.delivery_payment_method_var = tk.StringVar(value="cash")
+        self.delivery_payment_frame = tk.Frame(right, bg=COLOR_BG)
+        self.delivery_payment_frame.grid(row=r2, column=1, sticky="w")
+        tk.Radiobutton(self.delivery_payment_frame, text="Готівковий розрахунок",
+                        variable=self.delivery_payment_method_var, value="cash",
+                        font=FONT, bg=COLOR_BG).pack(side="left", padx=(0, 8))
+        tk.Radiobutton(self.delivery_payment_frame, text="Безготівковий розрахунок",
+                        variable=self.delivery_payment_method_var, value="non_cash",
+                        font=FONT, bg=COLOR_BG).pack(side="left")
+        self.delivery_payment_label.grid_remove()
+        self.delivery_payment_frame.grid_remove()
+        r2 += 1
+
         tk.Label(right, text="Одержувач, ПІБ:", font=FONT).grid(row=r2, column=0, sticky="w", pady=3)
         self.recipient_name_var = tk.StringVar()
         tk.Entry(right, textvariable=self.recipient_name_var, width=32, font=FONT).grid(row=r2, column=1, sticky="we")
@@ -1187,6 +1211,13 @@ class App(tk.Tk):
         # прихований лейбл-підказка: логіка вмикання/вимикання прапорця (напр.
         # для самовивозу) лишається, але текст користувачу більше не показуємо
         self.ttn_status_label = tk.Label(ttn_frame, text="")
+
+        self.vat_enabled_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            ttn_frame, text="Додати ПДВ (+20% до цін з прайсу)",
+            variable=self.vat_enabled_var, font=FONT, bg=COLOR_BG,
+            command=self._recalculate_items_for_vat
+        ).pack(anchor="w", pady=(4, 0))
         r2 += 1
         # номер ТТН стає відомим лише ПІСЛЯ формування заявки — тому окремого
         # поля тут немає, номер показується у вікні підтвердження і в
@@ -1249,8 +1280,9 @@ class App(tk.Tk):
         table_frame = tk.Frame(canvas_wrap)
         table_frame.pack(fill="both", expand=True, padx=14, pady=4)
 
-        cols = ("name", "code", "unit", "qty", "price", "sum", "weight_unit", "weight_total")
-        headers = ["Найменування", "Код", "Од.вим", "К-сть", "Ціна", "Сума", "Вага/од", "Вага всього"]
+        cols = ("name", "code", "unit", "qty", "price", "price_vat", "sum", "weight_unit", "weight_total")
+        headers = ["Найменування", "Код", "Од.вим", "К-сть", "Ціна", "Ціна з ПДВ", "Сума",
+                   "Вага/од", "Вага всього"]
         self.items_tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=8)
         for c, h in zip(cols, headers):
             self.items_tree.heading(c, text=h)
@@ -1298,10 +1330,15 @@ class App(tk.Tk):
         if self.recipient_type_var.get() == "legal":
             self.recipient_edrpou_label.grid()
             self.recipient_edrpou_entry.grid()
+            self.delivery_payment_label.grid()
+            self.delivery_payment_frame.grid()
         else:
             self.recipient_edrpou_label.grid_remove()
             self.recipient_edrpou_entry.grid_remove()
             self.recipient_edrpou_var.set("")
+            self.delivery_payment_label.grid_remove()
+            self.delivery_payment_frame.grid_remove()
+            self.delivery_payment_method_var.set("cash")
 
     # -- логіка перевізник / тип доставки --
     def _apply_delivery_state(self):
@@ -1615,6 +1652,8 @@ class App(tk.Tk):
             self.item_weight_entry.configure(state="normal")
 
     # -- товарні рядки --
+    VAT_RATE = 1.20
+
     def _add_item(self):
         name = self.product_entry.get().strip()
         if not name:
@@ -1642,20 +1681,24 @@ class App(tk.Tk):
             self._error("Помилка", "Некоректна вага.")
             return
 
+        price_vat = round(price * self.VAT_RATE, 2)
+        effective_price = price_vat if self.vat_enabled_var.get() else price
         item = {
             "code": self.item_code_entry.get().strip(),
             "name": name,
             "unit": self.item_unit_var.get().strip(),
             "qty": qty,
             "price": price,
-            "sum": round(qty * price, 2),
+            "price_vat": price_vat,
+            "sum": round(qty * effective_price, 2),
             "weight_unit": weight_unit,
             "weight_total": round(qty * weight_unit, 2),
         }
         self.current_items.append(item)
         self.items_tree.insert("", "end", values=(
             item["name"], item["code"], item["unit"], item["qty"],
-            item["price"], item["sum"], item["weight_unit"], item["weight_total"]
+            item["price"], item["price_vat"], item["sum"],
+            item["weight_unit"], item["weight_total"]
         ))
         self.product_entry.set("")
         self.item_code_entry.set("")
@@ -1667,6 +1710,30 @@ class App(tk.Tk):
         self.item_qty_var.set("1")
         self._selected_product = None
         self._selected_product_label = None
+        self._update_totals()
+
+    def _recalculate_items_for_vat(self):
+        """
+        При перемиканні галочки "Додати ПДВ" перераховує суми вже доданих
+        у заявку товарів, щоб таблиця лишалась узгодженою — а не так, що
+        частина рядків додана з ПДВ, а частина без нього.
+        """
+        vat_on = self.vat_enabled_var.get()
+        for item in self.current_items:
+            price_vat = item.get("price_vat")
+            if price_vat is None:
+                price_vat = round(item["price"] * self.VAT_RATE, 2)
+                item["price_vat"] = price_vat
+            effective_price = price_vat if vat_on else item["price"]
+            item["sum"] = round(item["qty"] * effective_price, 2)
+
+        self.items_tree.delete(*self.items_tree.get_children())
+        for item in self.current_items:
+            self.items_tree.insert("", "end", values=(
+                item["name"], item["code"], item["unit"], item["qty"],
+                item["price"], item["price_vat"], item["sum"],
+                item["weight_unit"], item["weight_total"]
+            ))
         self._update_totals()
 
     def _remove_selected_item(self):
@@ -1791,6 +1858,9 @@ class App(tk.Tk):
             "payer_type": self.payer_type_var.get(),
             "seats_amount": seats_amount,
             "cod_amount": cod_amount,
+            "vat_enabled": self.vat_enabled_var.get(),
+            "delivery_payment_method": (self.delivery_payment_method_var.get()
+                                         if self.recipient_type_var.get() == "legal" else "cash"),
             "sender_warehouse_number": self.sender_warehouse_var.get(),
             "total_sum": round(sum(i["sum"] for i in self.current_items), 2),
             "total_weight": round(sum(i["weight_total"] for i in self.current_items), 2),
@@ -1940,6 +2010,7 @@ class App(tk.Tk):
         self.cod_amount_entry.configure(state="disabled")
         self.sender_warehouse_var.set("1")
         self.auto_ttn_var.set(True)
+        self.vat_enabled_var.set(False)
         self.current_items = []
         self.items_tree.delete(*self.items_tree.get_children())
         self._update_totals()
@@ -2483,6 +2554,7 @@ class App(tk.Tk):
         self.recipient_type_var.set(order.get("recipient_type") or "individual")
         self._on_recipient_type_changed()
         self.recipient_edrpou_var.set(order.get("recipient_edrpou") or "")
+        self.delivery_payment_method_var.set(order.get("delivery_payment_method") or "cash")
         self.recipient_name_var.set(order.get("recipient_name") or "")
         self.payer_type_var.set(order.get("payer_type") or "recipient")
         self.seats_amount_var.set(str(order.get("seats_amount") or 1))
@@ -2499,22 +2571,28 @@ class App(tk.Tk):
         # явна дія ("Створити ТТН" в історії), щоб випадкова зміна адреси
         # чи товару не спричиняла непередбачене звернення до перевізника
         self.auto_ttn_var.set(False)
+        self.vat_enabled_var.set(bool(order.get("vat_enabled")))
 
         # -- товари --
         self.current_items = []
         self.items_tree.delete(*self.items_tree.get_children())
         for it in items:
+            price = it.get("price") or 0
+            price_vat = it.get("price_vat")
+            if price_vat is None:
+                price_vat = round(price * self.VAT_RATE, 2)
             item = {
                 "code": it.get("code") or "", "name": it.get("name") or "",
                 "unit": it.get("unit") or "", "qty": it.get("qty") or 0,
-                "price": it.get("price") or 0, "sum": it.get("sum") or 0,
+                "price": price, "price_vat": price_vat, "sum": it.get("sum") or 0,
                 "weight_unit": it.get("weight_unit") or 0,
                 "weight_total": it.get("weight_total") or 0,
             }
             self.current_items.append(item)
             self.items_tree.insert("", "end", values=(
                 item["name"], item["code"], item["unit"], item["qty"],
-                item["price"], item["sum"], item["weight_unit"], item["weight_total"]
+                item["price"], item["price_vat"], item["sum"],
+                item["weight_unit"], item["weight_total"]
             ))
         self._update_totals()
 
@@ -2609,18 +2687,29 @@ class App(tk.Tk):
         # -- товари --
         tk.Label(wrap, text="Товари", font=FONT_BOLD, bg=COLOR_BG, fg=COLOR_TEXT).pack(
             anchor="w", pady=(14, 4))
-        cols = ("name", "code", "unit", "qty", "price", "sum")
-        headers = ["Найменування", "Код", "Од.вим", "К-сть", "Ціна", "Сума"]
+        show_vat_col = bool(order.get("vat_enabled"))
+        if show_vat_col:
+            cols = ("name", "code", "unit", "qty", "price", "price_vat", "sum")
+            headers = ["Найменування", "Код", "Од.вим", "К-сть", "Ціна", "Ціна з ПДВ", "Сума"]
+        else:
+            cols = ("name", "code", "unit", "qty", "price", "sum")
+            headers = ["Найменування", "Код", "Од.вим", "К-сть", "Ціна", "Сума"]
         items_tree = ttk.Treeview(wrap, columns=cols, show="headings", height=min(8, max(3, len(items))))
         for c, h in zip(cols, headers):
             items_tree.heading(c, text=h)
             items_tree.column(c, width=100, anchor="center")
         items_tree.column("name", width=220, anchor="w")
         for it in items:
-            items_tree.insert("", "end", values=(
-                it.get("name"), it.get("code"), it.get("unit"), it.get("qty"),
-                it.get("price"), it.get("sum")
-            ))
+            if show_vat_col:
+                items_tree.insert("", "end", values=(
+                    it.get("name"), it.get("code"), it.get("unit"), it.get("qty"),
+                    it.get("price"), it.get("price_vat"), it.get("sum")
+                ))
+            else:
+                items_tree.insert("", "end", values=(
+                    it.get("name"), it.get("code"), it.get("unit"), it.get("qty"),
+                    it.get("price"), it.get("sum")
+                ))
         items_tree.pack(fill="x")
 
         totals_text = f"Разом: {order.get('total_sum') or 0:.2f} грн, {order.get('total_weight') or 0:.2f} кг"
@@ -2650,35 +2739,44 @@ class App(tk.Tk):
             btns = tk.Frame(ttn_frame, bg=COLOR_BG)
             btns.pack(anchor="w", pady=(8, 0))
 
-            def download_pdf():
-                pdf_path = order.get("ttn_pdf_path")
-                if pdf_path and os.path.exists(pdf_path):
-                    self._open_file_externally(pdf_path)
+            def download_ttn_form(form="full"):
+                path_key = "ttn_label_path" if form == "label" else "ttn_pdf_path"
+                cached_path = order.get(path_key)
+                if cached_path and os.path.exists(cached_path):
+                    self._open_file_externally(cached_path)
                     return
                 sender = db.get_sender(order.get("payment_method") or "")
                 if not sender or sender.get("carrier") != order.get("carrier") or not sender.get("api_key"):
                     self._error("Не вдалось", "Немає доступного API-ключа для цього "
-                                          "відправника, щоб довантажити бланк.")
+                                          "відправника, щоб довантажити файл.")
                     return
                 self.config(cursor="watch")
                 self.update_idletasks()
                 try:
-                    pdf_bytes = carriers.fetch_ttn_pdf(order.get("ttn_ref"), sender["api_key"])
-                    pdf_name = order["file_name"].rsplit(".", 1)[0] + "_ттн.pdf"
+                    pdf_bytes = carriers.fetch_ttn_pdf(order.get("ttn_ref"), sender["api_key"], form=form)
+                    suffix = "_наклейка.pdf" if form == "label" else "_ттн.pdf"
+                    pdf_name = order["file_name"].rsplit(".", 1)[0] + suffix
                     new_path = os.path.join(OUTPUT_DIR, pdf_name)
                     with open(new_path, "wb") as f:
                         f.write(pdf_bytes)
-                    db.set_order_ttn_pdf_path(order_id, new_path)
-                    order["ttn_pdf_path"] = new_path
+                    if form == "label":
+                        db.set_order_ttn_label_path(order_id, new_path)
+                    else:
+                        db.set_order_ttn_pdf_path(order_id, new_path)
+                    order[path_key] = new_path
                     self._open_file_externally(new_path)
                 except carriers.CarrierAPIError as e:
-                    self._error("Не вдалось завантажити бланк", str(e))
+                    kind = "наклейку" if form == "label" else "бланк"
+                    self._error(f"Не вдалось завантажити {kind}", str(e))
                 finally:
                     self.config(cursor="")
 
             tk.Button(btns, text="Відкрити бланк ТТН (PDF)", font=FONT_SMALL,
                       bg=COLOR_ACCENT, fg="white", relief="flat", padx=10, pady=4,
-                      cursor="hand2", command=download_pdf).pack(side="left")
+                      cursor="hand2", command=lambda: download_ttn_form("full")).pack(side="left")
+            tk.Button(btns, text="Відкрити наклейку ТТН (PDF)", font=FONT_SMALL,
+                      bg=COLOR_ACCENT, fg="white", relief="flat", padx=10, pady=4,
+                      cursor="hand2", command=lambda: download_ttn_form("label")).pack(side="left", padx=(8, 0))
 
             if order.get("ttn_status") != "cancelled":
                 def cancel_and_refresh():

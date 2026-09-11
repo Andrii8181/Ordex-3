@@ -7,6 +7,7 @@ import os
 import re
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 from datetime import datetime
 
 THIN = Side(style="thin")
@@ -95,16 +96,32 @@ def generate_order_excel(header, items, output_path):
         next_row += 1
 
     headers_row = next_row
-    col_titles = [
-        ("A", "№П/п"), ("B", "Найменування"), ("C", None),
-        ("D", "Од.вим"), ("E", "К-сть"), ("F", "Ціна "),
-        ("G", "Сумма"), ("H", "Вага, кг"), ("I", "Вага, всього"),
+    vat_enabled = bool(header.get("vat_enabled"))
+    col_defs = [
+        ("seq_no", "№П/п", 6),
+        ("name", "Найменування", 22),
+        ("code", None, 14),
+        ("unit", "Од.вим", 8),
+        ("qty", "К-сть", 7),
+        ("price", "Ціна ", 9),
     ]
-    ws.merge_cells(f"B{headers_row}:C{headers_row}")
-    for col, title in col_titles:
+    if vat_enabled:
+        col_defs.append(("price_vat", "Ціна з ПДВ", 11))
+    col_defs += [
+        ("sum", "Сумма", 10),
+        ("weight_unit", "Вага, кг", 9),
+        ("weight_total", "Вага, всього", 11),
+    ]
+    col_letters = {key: get_column_letter(i + 1) for i, (key, _title, _w) in enumerate(col_defs)}
+    last_col_letter = col_letters[col_defs[-1][0]]
+
+    name_col = col_letters["name"]
+    code_col = col_letters["code"]
+    ws.merge_cells(f"{name_col}{headers_row}:{code_col}{headers_row}")
+    for key, title, _w in col_defs:
         if title is None:
             continue
-        cell = ws[f"{col}{headers_row}"]
+        cell = ws[f"{col_letters[key]}{headers_row}"]
         cell.value = title
         cell.font = BOLD
         cell.alignment = Alignment(horizontal="center", wrap_text=True)
@@ -114,35 +131,23 @@ def generate_order_excel(header, items, output_path):
     total_weight = 0.0
     row = headers_row + 1
     for it in items:
-        ws[f"A{row}"] = it["seq_no"]
-        ws[f"B{row}"] = it["name"]
-        ws[f"C{row}"] = it.get("code", "")
-        ws[f"D{row}"] = it.get("unit", "")
-        ws[f"E{row}"] = it["qty"]
-        ws[f"F{row}"] = it["price"]
-        ws[f"G{row}"] = it["sum"]
-        ws[f"H{row}"] = it.get("weight_unit", "")
-        ws[f"I{row}"] = it.get("weight_total", "")
-        for col in "ABCDEFGHI":
-            ws[f"{col}{row}"].border = BORDER
-        total_sum += it["sum"] or 0
+        for key, _title, _w in col_defs:
+            ws[f"{col_letters[key]}{row}"] = it.get(key, "" if key == "code" or key == "unit" else 0)
+        for _key, _title, _w in col_defs:
+            ws[f"{col_letters[_key]}{row}"].border = BORDER
+        total_sum += it.get("sum") or 0
         total_weight += it.get("weight_total") or 0
         row += 1
 
-    ws[f"G{row}"] = round(total_sum, 2)
-    ws[f"I{row}"] = round(total_weight, 2)
-    ws[f"G{row}"].font = BOLD
-    ws[f"I{row}"].font = BOLD
+    sum_col = col_letters["sum"]
+    weight_total_col = col_letters["weight_total"]
+    ws[f"{sum_col}{row}"] = round(total_sum, 2)
+    ws[f"{weight_total_col}{row}"] = round(total_weight, 2)
+    ws[f"{sum_col}{row}"].font = BOLD
+    ws[f"{weight_total_col}{row}"].font = BOLD
 
-    ws.column_dimensions["A"].width = 6
-    ws.column_dimensions["B"].width = 22
-    ws.column_dimensions["C"].width = 14
-    ws.column_dimensions["D"].width = 8
-    ws.column_dimensions["E"].width = 7
-    ws.column_dimensions["F"].width = 9
-    ws.column_dimensions["G"].width = 10
-    ws.column_dimensions["H"].width = 9
-    ws.column_dimensions["I"].width = 11
+    for key, _title, width in col_defs:
+        ws.column_dimensions[col_letters[key]].width = width
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     wb.save(output_path)

@@ -213,6 +213,10 @@ def init_db():
     _ensure_column(conn, "orders", "ttn_pdf_path", "TEXT")
     _ensure_column(conn, "orders", "order_status", "TEXT")
     _ensure_column(conn, "orders", "shipped_date", "TEXT")
+    _ensure_column(conn, "orders", "vat_enabled", "INTEGER")
+    _ensure_column(conn, "orders", "delivery_payment_method", "TEXT")
+    _ensure_column(conn, "orders", "ttn_label_path", "TEXT")
+    _ensure_column(conn, "order_items", "price_vat", "REAL")
 
     _migrate_to_senders_table(conn)
     conn.commit()
@@ -580,7 +584,7 @@ def delete_sender(payment_method):
 def save_order(header, items, file_name):
     """
     header: dict з полями заявки (див. схему orders)
-    items: список dict з полями code, name, unit, qty, price, sum,
+    items: список dict з полями code, name, unit, qty, price, price_vat, sum,
            weight_unit, weight_total
     Повертає id заявки.
     """
@@ -595,8 +599,10 @@ def save_order(header, items, file_name):
                              recipient_address, recipient_name, recipient_type,
                              recipient_edrpou, total_sum, total_weight,
                              client_id, file_name, ttn, ttn_ref, ttn_status, ttn_error,
-                             ttn_pdf_path, shipped_date, payer_type, seats_amount, cod_amount, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             ttn_pdf_path, ttn_label_path, shipped_date, payer_type,
+                             seats_amount, cod_amount, vat_enabled, delivery_payment_method,
+                             created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         header["order_number"], header["order_date"], header["buyer_name"],
         header.get("buyer_address"), header.get("responsible"),
@@ -611,19 +617,20 @@ def save_order(header, items, file_name):
         header.get("total_sum"), header.get("total_weight"),
         header.get("client_id"), file_name,
         header.get("ttn"), header.get("ttn_ref"), header.get("ttn_status"), header.get("ttn_error"),
-        header.get("ttn_pdf_path"), header.get("shipped_date"),
+        header.get("ttn_pdf_path"), header.get("ttn_label_path"), header.get("shipped_date"),
         header.get("payer_type"), header.get("seats_amount"), header.get("cod_amount"),
+        1 if header.get("vat_enabled") else 0, header.get("delivery_payment_method"),
         datetime.now().isoformat(timespec="seconds"),
     ))
     order_id = cur.lastrowid
     for i, it in enumerate(items, start=1):
         cur.execute("""
             INSERT INTO order_items (order_id, seq_no, code, name, unit, qty,
-                                      price, sum, weight_unit, weight_total)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      price, price_vat, sum, weight_unit, weight_total)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (order_id, i, it.get("code"), it["name"], it.get("unit"),
-              it["qty"], it["price"], it["sum"], it.get("weight_unit"),
-              it.get("weight_total")))
+              it["qty"], it["price"], it.get("price_vat"), it["sum"],
+              it.get("weight_unit"), it.get("weight_total")))
     conn.commit()
     conn.close()
     return order_id
@@ -649,7 +656,8 @@ def update_order(order_id, header, items, file_name):
             recipient_address = ?, recipient_name = ?, recipient_type = ?,
             recipient_edrpou = ?, total_sum = ?, total_weight = ?,
             client_id = ?, file_name = ?, ttn = ?, ttn_ref = ?, ttn_status = ?, ttn_error = ?,
-            ttn_pdf_path = ?, shipped_date = ?, payer_type = ?, seats_amount = ?, cod_amount = ?
+            ttn_pdf_path = ?, ttn_label_path = ?, shipped_date = ?, payer_type = ?,
+            seats_amount = ?, cod_amount = ?, vat_enabled = ?, delivery_payment_method = ?
         WHERE id = ?
     """, (
         header["order_number"], header["order_date"], header["buyer_name"],
@@ -665,19 +673,20 @@ def update_order(order_id, header, items, file_name):
         header.get("total_sum"), header.get("total_weight"),
         header.get("client_id"), file_name,
         header.get("ttn"), header.get("ttn_ref"), header.get("ttn_status"), header.get("ttn_error"),
-        header.get("ttn_pdf_path"), header.get("shipped_date"),
+        header.get("ttn_pdf_path"), header.get("ttn_label_path"), header.get("shipped_date"),
         header.get("payer_type"), header.get("seats_amount"), header.get("cod_amount"),
+        1 if header.get("vat_enabled") else 0, header.get("delivery_payment_method"),
         order_id,
     ))
     cur.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
     for i, it in enumerate(items, start=1):
         cur.execute("""
             INSERT INTO order_items (order_id, seq_no, code, name, unit, qty,
-                                      price, sum, weight_unit, weight_total)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      price, price_vat, sum, weight_unit, weight_total)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (order_id, i, it.get("code"), it["name"], it.get("unit"),
-              it["qty"], it["price"], it["sum"], it.get("weight_unit"),
-              it.get("weight_total")))
+              it["qty"], it["price"], it.get("price_vat"), it["sum"],
+              it.get("weight_unit"), it.get("weight_total")))
     conn.commit()
     conn.close()
 
@@ -779,6 +788,13 @@ def get_order(order_id):
 def set_order_ttn_pdf_path(order_id, pdf_path):
     conn = get_connection()
     conn.execute("UPDATE orders SET ttn_pdf_path = ? WHERE id = ?", (pdf_path, order_id))
+    conn.commit()
+    conn.close()
+
+
+def set_order_ttn_label_path(order_id, label_path):
+    conn = get_connection()
+    conn.execute("UPDATE orders SET ttn_label_path = ? WHERE id = ?", (label_path, order_id))
     conn.commit()
     conn.close()
 

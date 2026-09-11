@@ -245,11 +245,14 @@ def _create_ttn_nova_poshta(header, items, credentials):
 
     payer_type_np = "Recipient" if header.get("payer_type") == "recipient" else "Sender"
     seats_amount = header.get("seats_amount") or 1
+    # спосіб оплати доставки: готівка (типово) або безготівковий розрахунок —
+    # актуально насамперед для одержувачів-юридичних осіб
+    payment_method_np = "NonCash" if header.get("delivery_payment_method") == "non_cash" else "Cash"
 
     props = {
         "NewAddress": "1",
         "PayerType": payer_type_np,
-        "PaymentMethod": "Cash",
+        "PaymentMethod": payment_method_np,
         "CargoType": "Cargo",
         "Weight": str(round(float(total_weight), 2)),
         "ServiceType": "WarehouseWarehouse",
@@ -443,13 +446,24 @@ def _cancel_ttn_nova_poshta(ttn_ref, credentials):
 
 
 PRINT_DOCUMENT_URL = "https://my.novaposhta.ua/orders/printDocument/orders[0]/{ref}/type/pdf/apiKey/{api_key}"
+PRINT_MARKING_URL = "https://my.novaposhta.ua/orders/printMarking100x100/orders[0]/{ref}/type/pdf/apiKey/{api_key}"
 
 
-def fetch_ttn_pdf(ttn_ref, api_key):
+def fetch_ttn_pdf(ttn_ref, api_key, form="full"):
     """
-    Завантажує друковану форму ТТН (бланк-накладну) у форматі PDF з
-    Нової Пошти. Повертає байти PDF-файлу. Кидає CarrierAPIError, якщо
-    завантажити не вдалось (напр. немає з'єднання чи невірний Ref).
+    Завантажує друковану форму ТТН у форматі PDF з Нової Пошти.
+    form="full"  — повний бланк-накладна (формат за замовчуванням).
+    form="label" — маленька наклейка 100х100мм, як друкують безпосередньо
+                   у відділеннях на самі посилки.
+
+    ВАЖЛИВО: URL для формату "label" (printMarking100x100) взятий за
+    задокументованим шаблоном Нової Пошти, але, як і решта інтеграції,
+    жодного реального виклику під час розробки не виконувалось — перед
+    регулярним використанням перевірте, що завантажений файл дійсно є
+    наклейкою потрібного розміру, а не повним бланком.
+
+    Повертає байти PDF-файлу. Кидає CarrierAPIError, якщо завантажити не
+    вдалось (напр. немає з'єднання чи невірний Ref).
     """
     if not REQUESTS_AVAILABLE:
         raise CarrierAPIError("Модуль мережевих запитів (requests) недоступний у цій збірці.")
@@ -457,12 +471,14 @@ def fetch_ttn_pdf(ttn_ref, api_key):
         raise CarrierAPIError("Немає внутрішнього ідентифікатора (Ref) цієї накладної.")
     if not api_key:
         raise CarrierAPIError("Не вказано API-ключ Нової Пошти.")
-    url = PRINT_DOCUMENT_URL.format(ref=ttn_ref, api_key=api_key)
+    url_template = PRINT_MARKING_URL if form == "label" else PRINT_DOCUMENT_URL
+    url = url_template.format(ref=ttn_ref, api_key=api_key)
+    kind_text = "наклейку" if form == "label" else "бланк"
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
     except requests.RequestException as e:
-        raise CarrierAPIError(f"Не вдалось завантажити бланк ТТН: {e}")
+        raise CarrierAPIError(f"Не вдалось завантажити {kind_text} ТТН: {e}")
     content_type = resp.headers.get("Content-Type", "")
     if "pdf" not in content_type.lower() and not resp.content.startswith(b"%PDF"):
         raise CarrierAPIError(
