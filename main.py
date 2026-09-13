@@ -396,6 +396,7 @@ class App(tk.Tk):
     def _populate_settings_menu(self, menu):
         menu.add_command(label="Відправники...", command=self._senders_dialog)
         menu.add_command(label="Сповіщення та відстеження...", command=self._tracking_settings_dialog)
+        menu.add_command(label="Ставка ПДВ...", command=self._vat_rate_dialog)
 
     def _populate_reports_menu(self, menu):
         for key, label in REPORT_MENU_ITEMS:
@@ -956,6 +957,85 @@ class App(tk.Tk):
         y = self.winfo_rooty() + (self.winfo_height() - req_h) // 2
         win.geometry(f"{req_w}x{req_h}+{max(x, 0)}+{max(y, 0)}")
 
+    def _get_vat_rate_percent(self):
+        """Поточна ставка ПДВ у відсотках (за замовчуванням 20, поки
+        держава не змінить — і тоді достатньо буде поправити тут, у
+        Налаштуваннях, без переустановлення програми)."""
+        raw = db.get_setting("vat_rate_percent", "20")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 20.0
+
+    def _get_vat_multiplier(self):
+        return 1 + (self._get_vat_rate_percent() / 100)
+
+    def _vat_rate_dialog(self):
+        win = tk.Toplevel(self)
+        win.title("Ставка ПДВ")
+        win.configure(bg=COLOR_BG)
+        win.transient(self)
+        win.resizable(False, False)
+
+        wrap = tk.Frame(win, bg=COLOR_BG, padx=16, pady=16)
+        wrap.pack(fill="both", expand=True)
+
+        tk.Label(wrap, text="Ставка ПДВ", font=FONT_BOLD,
+                 bg=COLOR_BG, fg=COLOR_TEXT).pack(anchor="w", pady=(0, 4))
+        tk.Label(wrap,
+                 text="Відсоток, який додається до цін з прайсу при увімкненій\n"
+                      "галочці \"Додати ПДВ\" у заявці. За замовчуванням 20% —\n"
+                      "якщо держава змінить ставку, досить поправити її тут,\n"
+                      "без переустановлення програми.",
+                 font=FONT_SMALL, bg=COLOR_BG, fg=COLOR_TEXT_MUTED,
+                 justify="left").pack(anchor="w", pady=(0, 14))
+
+        rate_frame = tk.Frame(wrap, bg=COLOR_BG)
+        rate_frame.pack(anchor="w")
+        tk.Label(rate_frame, text="Ставка ПДВ:", font=FONT, bg=COLOR_BG).pack(side="left")
+        rate_var = tk.StringVar(value=self._format_vat_percent(self._get_vat_rate_percent()))
+        tk.Entry(rate_frame, textvariable=rate_var, width=6, font=FONT).pack(side="left", padx=6)
+        tk.Label(rate_frame, text="%", font=FONT, bg=COLOR_BG).pack(side="left")
+
+        def save_and_close():
+            raw = rate_var.get().strip().replace(",", ".")
+            try:
+                percent = float(raw)
+            except ValueError:
+                self._error("Помилка", "Ставка ПДВ має бути числом, наприклад 20.")
+                return
+            if percent < 0 or percent > 100:
+                self._error("Помилка", "Ставка ПДВ має бути в межах від 0 до 100.")
+                return
+            db.set_setting("vat_rate_percent", self._format_vat_percent(percent))
+            self._refresh_vat_checkbox_text()
+            win.destroy()
+            self._info("Готово", f"Ставку ПДВ встановлено: {self._format_vat_percent(percent)}%.")
+
+        tk.Button(wrap, text="Зберегти", font=FONT, bg=COLOR_ACCENT, fg="white",
+                  activebackground=COLOR_ACCENT_DARK, activeforeground="white",
+                  relief="flat", padx=12, pady=6, cursor="hand2",
+                  command=save_and_close).pack(anchor="w", pady=(16, 0))
+
+        win.update_idletasks()
+        req_w = max(win.winfo_reqwidth(), 420)
+        req_h = win.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width() - req_w) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - req_h) // 2
+        win.geometry(f"{req_w}x{req_h}+{max(x, 0)}+{max(y, 0)}")
+
+    @staticmethod
+    def _format_vat_percent(value):
+        # прибираємо зайвий ".0" для цілих значень (20.0 -> "20"), але
+        # лишаємо дробову частину, якщо вона є (20.5 -> "20.5")
+        text = f"{value:g}"
+        return text
+
+    def _refresh_vat_checkbox_text(self):
+        if hasattr(self, "vat_checkbox"):
+            percent_text = self._format_vat_percent(self._get_vat_rate_percent())
+            self.vat_checkbox.configure(text=f"Додати ПДВ (+{percent_text}% до цін з прайсу)")
+
     # ------------------------------------------------------------------
     # "Нова заявка"
     # ------------------------------------------------------------------
@@ -1213,11 +1293,13 @@ class App(tk.Tk):
         self.ttn_status_label = tk.Label(ttn_frame, text="")
 
         self.vat_enabled_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(
-            ttn_frame, text="Додати ПДВ (+20% до цін з прайсу)",
+        vat_percent_text = self._format_vat_percent(self._get_vat_rate_percent())
+        self.vat_checkbox = tk.Checkbutton(
+            ttn_frame, text=f"Додати ПДВ (+{vat_percent_text}% до цін з прайсу)",
             variable=self.vat_enabled_var, font=FONT, bg=COLOR_BG,
             command=self._recalculate_items_for_vat
-        ).pack(anchor="w", pady=(4, 0))
+        )
+        self.vat_checkbox.pack(anchor="w", pady=(4, 0))
         r2 += 1
         # номер ТТН стає відомим лише ПІСЛЯ формування заявки — тому окремого
         # поля тут немає, номер показується у вікні підтвердження і в
@@ -1652,8 +1734,6 @@ class App(tk.Tk):
             self.item_weight_entry.configure(state="normal")
 
     # -- товарні рядки --
-    VAT_RATE = 1.20
-
     def _add_item(self):
         name = self.product_entry.get().strip()
         if not name:
@@ -1681,7 +1761,7 @@ class App(tk.Tk):
             self._error("Помилка", "Некоректна вага.")
             return
 
-        price_vat = round(price * self.VAT_RATE, 2)
+        price_vat = round(price * self._get_vat_multiplier(), 2)
         effective_price = price_vat if self.vat_enabled_var.get() else price
         item = {
             "code": self.item_code_entry.get().strip(),
@@ -1728,7 +1808,7 @@ class App(tk.Tk):
         for item in self.current_items:
             price_vat = item.get("price_vat")
             if price_vat is None:
-                price_vat = round(item["price"] * self.VAT_RATE, 2)
+                price_vat = round(item["price"] * self._get_vat_multiplier(), 2)
                 item["price_vat"] = price_vat
             effective_price = price_vat if vat_on else item["price"]
             item["sum"] = round(item["qty"] * effective_price, 2)
@@ -2586,7 +2666,7 @@ class App(tk.Tk):
             price = it.get("price") or 0
             price_vat = it.get("price_vat")
             if price_vat is None:
-                price_vat = round(price * self.VAT_RATE, 2)
+                price_vat = round(price * self._get_vat_multiplier(), 2)
             item = {
                 "code": it.get("code") or "", "name": it.get("name") or "",
                 "unit": it.get("unit") or "", "qty": it.get("qty") or 0,
